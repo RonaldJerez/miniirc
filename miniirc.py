@@ -344,6 +344,7 @@ class IRC:
         self._sasl = self._pinged = False
         
         self._task = self._loop.create_task(self._async_main())
+        await self._task
 
     # Disconnect from IRC.
     async def disconnect(self, msg=None, *, auto_reconnect=False):
@@ -360,8 +361,9 @@ class IRC:
         except Exception:
             pass
 
-        self._writer.close()
-        await self._writer.wait_closed()
+        if hasattr(self, '_writer'):
+            self._writer.close()
+            await self._writer.wait_closed()
 
         # Cancel any running task
         if self._task and not self._task.done():
@@ -372,7 +374,7 @@ class IRC:
                 pass
 
     # Finish capability negotiation
-    def finish_negotiation(self, cap):
+    async def finish_negotiation(self, cap):
         self.debug('Capability', cap, 'handled.')
         if self._unhandled_caps:
             cap = cap.lower()
@@ -381,7 +383,7 @@ class IRC:
             if len(self._unhandled_caps) < 1:
                 self._unhandled_caps = None
                 if not self.connected:
-                    self.quote('CAP END', force=True)
+                    await self.quote('CAP END', force=True)
 
     # Change the message parser
     def change_parser(self, parser=ircv3_message_parser):
@@ -416,16 +418,16 @@ class IRC:
         return handled
 
     # Launch IRCv3 handlers
-    def _handle_cap(self, cap):
+    async def _handle_cap(self, cap):
         cap = cap.lower()
         self.active_caps.add(cap)
         if self._unhandled_caps and cap in self._unhandled_caps:
-            handled = self.handle_msg(IRCMessage(
+            handled = await self.handle_msg(IRCMessage(
                 ('IRCv3 ' + cap).upper(), ('', '', ''), {},
                 self._unhandled_caps[cap]
             ))
             if not handled:
-                self.finish_negotiation(cap)
+                await self.finish_negotiation(cap)
 
     async def _send_initial_msgs(self):
         await self.quote('CAP LS 302', force=True)
@@ -610,7 +612,7 @@ async def _handler(irc, hostmask, args):
     elif cmd == 'ACK':
         caps = args[-1].split(' ')
         for cap in caps:
-            irc._handle_cap(cap)
+            await irc._handle_cap(cap)
     elif cmd == 'NAK':
         irc._unhandled_caps = None
         await irc.quote('CAP END', force=True)
@@ -628,7 +630,7 @@ async def _handler(irc, hostmask, args):
         await irc.quote('AUTHENTICATE PLAIN', force=True)
     else:
         await irc.quote('AUTHENTICATE *', force=True)
-        irc.finish_negotiation('sasl')
+        await irc.finish_negotiation('sasl')
 
 @Handler('AUTHENTICATE')
 async def _handler(irc, hostmask, args):
@@ -646,7 +648,7 @@ async def _handler(irc, hostmask, args):
 
 @Handler('902', '903', '904', '905')
 async def _handler(irc, hostmask, args):
-    irc.finish_negotiation('sasl')
+    await irc.finish_negotiation('sasl')
 
 # STS
 @Handler('IRCv3 STS')
@@ -667,7 +669,7 @@ async def _handler(irc, hostmask, args):
         await irc.connect()
         irc.persist = persist
     else:
-        irc.finish_negotiation('sts')
+        await irc.finish_negotiation('sts')
 
 # Maximum line length
 @Handler('IRCv3 oragono.io/maxline-2')
@@ -677,7 +679,7 @@ async def _handler(irc, hostmask, args):
     except ValueError:
         pass
 
-    irc.finish_negotiation(args[0])
+    await irc.finish_negotiation(args[0])
 
 # Handle ISUPPORT messages
 @Handler('005')
