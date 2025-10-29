@@ -5,22 +5,28 @@
 # © 2018-2022 by luk3yx and other contributors of miniirc.
 #
 
-import asyncio, collections, threading, time, types, re, ssl, sys
+import asyncio
+import collections
+import re
+import ssl
+import sys
+import types
+import warnings
 
 # The version string and tuple
-ver = __version_info__ = (2,0,0,'a8')
-version = 'miniirc IRC framework v2.0.0a8'
-__version__ = '2.0.0a8'
+ver = __version_info__ = (2,0,0,'a9')
+version = 'miniirc IRC framework v2.0.0a9'
+__version__ = '2.0.0a9'
 
 # __all__ and _default_caps
 __all__ = ['CmdHandler', 'Handler', 'IRC']
 _default_caps = {'account-notify', 'account-tag', 'away-notify', 'cap-notify',
-                 'chghost', 'extended-join', 'invite-notify', 'message-tags',
-                 'oragono.io/maxline-2', 'server-time', 'sts'}
+                'chghost', 'extended-join', 'invite-notify', 'message-tags',
+                'oragono.io/maxline-2', 'server-time', 'sts'}
 
 # Get the certificate list.
 try:
-    from certifi import where as get_ca_certs
+    from certifi import where as get_ca_certs # type: ignore
 except ImportError:
     def get_ca_certs():
         pass
@@ -150,19 +156,17 @@ def _dict_to_tags(tags):
 
 # A wrapper for callable logfiles
 class _Logfile:
-    __slots__ = ('_buffer', '_func', '_lock')
+    __slots__ = ('_buffer', '_func')
 
     def write(self, data):
-        with self._lock:
-            self._buffer += data
-            while '\n' in self._buffer:
-                line, self._buffer = self._buffer.split('\n', 1)
-                self._func(line)
+        self._buffer += data
+        while '\n' in self._buffer:
+            line, self._buffer = self._buffer.split('\n', 1)
+            self._func(line)
 
     def __init__(self, func):
         self._buffer = ''
         self._func = func
-        self._lock = threading.Lock()
 
 # Replace invalid RFC1459 characters with Unicode lookalikes
 def _prune_arg(arg):
@@ -182,7 +186,6 @@ class IRC:
     debug_file = sys.stdout
     _sendq = None
     msglen = 512
-    _main_thread = None
     _loop = None
     _sasl = False
     _unhandled_caps = None
@@ -191,7 +194,7 @@ class IRC:
                  realname=None, persist=True, debug=False, ns_identity=None,
                  auto_connect=True, ircv3_caps=None, connect_modes=None,
                  quit_message='I grew sick and died.', ping_interval=60,
-                 ping_timeout=None, verify_ssl=True, executor=None, loop=None):
+                 ping_timeout=None, verify_ssl=True, loop=None):
         # Set basic variables
         self.ip = ip
         self.port = int(port)
@@ -211,7 +214,8 @@ class IRC:
         self.ping_interval = ping_interval
         self.ping_timeout = ping_timeout
         self.verify_ssl = verify_ssl
-        self._executor = executor
+        self._task = None
+        self._sendq = []
 
         # Set the NickServ identity
         if ns_identity:
@@ -238,13 +242,18 @@ class IRC:
         # Add handlers and set the default message parser
         self.change_parser()
         self._handlers = {}
-        self._send_lock = threading.Lock()
         if ssl is None and self.port == 6697:
             self.ssl = True
 
         # Start the connection
         if auto_connect:
-            self.connect(loop=loop)
+            if loop is None:
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+            loop.create_task(self.connect())
         elif loop is not None:
             raise TypeError('loop cannot be specified with auto_connect=False')
 
@@ -256,41 +265,33 @@ class IRC:
                 self.debug_file.flush()
 
     # Send raw messages
-    def quote(self, *msg, force=False, tags=None):
-        with self._send_lock:
-            if not self.connected and not force:
-                self.debug('>Q>', *msg)
-                if not self._sendq:
-                    self._sendq = []
-                self._sendq.append((tags, msg))
-                return
+    async def quote(self, *msg, force=False, tags=None):
+        if not self.connected and not force:
+            self.debug('>Q>', *msg)
+            if not self._sendq:
+                self._sendq = []
+            self._sendq.append((tags, msg))
+            return
 
-            self.debug('>>>', *msg)
-            msg = (' '.join(msg).encode('utf-8').replace(b'\r', b' ')
-                   .replace(b'\n', b' '))
+        self.debug('>>>', *msg)
+        msg = (' '.join(msg).encode('utf-8').replace(b'\r', b' ')
+               .replace(b'\n', b' '))
 
-            if len(msg) + 2 > self.msglen:
-                msg = msg[:self.msglen - 2]
-                if msg[-1] >= 0x80:
-                    msg = msg.decode('utf-8', 'ignore').encode('utf-8')
+        if len(msg) + 2 > self.msglen:
+            msg = msg[:self.msglen - 2]
+            if msg[-1] >= 0x80:
+                msg = msg.decode('utf-8', 'ignore').encode('utf-8')
 
-            if isinstance(tags, dict) and 'message-tags' in self.active_caps:
-                msg = _dict_to_tags(tags) + msg
+        if isinstance(tags, dict) and 'message-tags' in self.active_caps:
+            msg = _dict_to_tags(tags) + msg
 
-            msg += b'\r\n'
-            if threading.current_thread() == self._main_thread:
-                self._writer.write(msg)
+        msg += b'\r\n'
+        self._writer.write(msg)
+        await self._writer.drain()
 
-                # Allow await to be used
-                return self._loop.create_task(_suppress_oserror(
-                    self._writer.drain()
-                ))
-            else:
-                self._loop.call_soon_threadsafe(self._writer.write, msg)
-
-    def send(self, command, *args, force=False, tags=None):
+    async def send(self, command, *args, force=False, tags=None):
         if args:
-            return self.quote(
+            await self.quote(
                 command,
                 *map(_prune_arg, args[:-1]),
                 ':' + args[-1],
@@ -298,21 +299,21 @@ class IRC:
                 tags=tags
             )
         else:
-            return self.quote(command, force=force, tags=tags)
+            await self.quote(command, force=force, tags=tags)
 
     # User-friendly msg, notice, and CTCP functions.
-    def msg(self, target, *msg, tags=None):
-        return self.quote('PRIVMSG', target, ':' + ' '.join(msg), tags=tags)
+    async def msg(self, target, *msg, tags=None):
+        await self.quote('PRIVMSG', target, ':' + ' '.join(msg), tags=tags)
 
-    def notice(self, target, *msg, tags=None):
-        return self.quote('NOTICE', target, ':' + ' '.join(msg), tags=tags)
+    async def notice(self, target, *msg, tags=None):
+        await self.quote('NOTICE', target, ':' + ' '.join(msg), tags=tags)
 
-    def ctcp(self, target, *msg, reply=False, tags=None):
+    async def ctcp(self, target, *msg, reply=False, tags=None):
         m = (self.notice if reply else self.msg)
-        return m(target, f'\x01{" ".join(msg)}\x01', tags=tags)
+        await m(target, f'\x01{" ".join(msg)}\x01', tags=tags)
 
-    def me(self, target, *msg, tags=None):
-        return self.ctcp(target, 'ACTION', *msg, tags=tags)
+    async def me(self, target, *msg, tags=None):
+        await self.ctcp(target, 'ACTION', *msg, tags=tags)
 
     # Allow per-connection handlers
     def Handler(self, *events, ircv3=False, colon=False):
@@ -322,58 +323,53 @@ class IRC:
         return _add_handler(self._handlers, events, ircv3, True, colon)
 
     # The connect function
-    def connect(self, *, loop=None):
-        with self._send_lock:
-            if self.connected is not None:
-                self.debug('Already connected!')
-                return
-            self.connected = False
-            self._unhandled_caps = None
-            self.current_nick = self.nick
-            self.debug('Starting main loop...')
-            self._sasl = self._pinged = False
+    async def connect(self, *, loop=None):
+        if self.connected is not None:
+            self.debug('Already connected!')
+            return
 
-            if loop is None:
-                self._start_main_loop()
-            else:
-                self._loop = loop
-                self._main_thread = threading.current_thread()
-                loop.create_task(self._async_main())
-
-    def _start_main_loop(self):
-        # Start the thread before updating _main_thread so that
-        # wait_until_disconnected() works correctly.
-        self._loop = None
-        thread = threading.Thread(target=self._main)
-        thread.start()
-        self._main_thread = thread
+        if loop is None:
+            # Try to get existing event loop, create new one if needed
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                
+        self._loop = loop
+        self.connected = False
+        self._unhandled_caps = None
+        self.current_nick = self.nick
+        self.debug('Starting main loop...')
+        self._sasl = self._pinged = False
+        
+        self._task = self._loop.create_task(self._async_main())
 
     # Disconnect from IRC.
-    def disconnect(self, msg=None, *, auto_reconnect=False):
-        with self._send_lock:
-            if self._loop is None:
-                return
-
-            if threading.current_thread() != self._main_thread:
-                self._loop.call_soon_threadsafe(
-                    lambda: self.disconnect(msg, auto_reconnect=auto_reconnect)
-                )
-                return
+    async def disconnect(self, msg=None, *, auto_reconnect=False):
+        if self._loop is None:
+            return
 
         self.persist = auto_reconnect and self.persist
         self.connected = None
         self.active_caps.clear()
         self._unhandled_caps = None
         try:
-            self.quote('QUIT :' + str(msg or self.quit_message),
+            await self.quote('QUIT :' + str(msg or self.quit_message),
                        force=True)
         except Exception:
             pass
 
         self._writer.close()
-        return self._loop.create_task(_suppress_oserror(
-            self._writer.wait_closed()
-        ))
+        await self._writer.wait_closed()
+
+        # Cancel any running task
+        if self._task and not self._task.done():
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
 
     # Finish capability negotiation
     def finish_negotiation(self, cap):
@@ -392,7 +388,7 @@ class IRC:
         self._parse = parser
 
     # Start a handler function
-    def _start_handler(self, handlers, msg):
+    async def _start_handler(self, handlers, msg):
         for handler in handlers:
             params = [self, msg.hostmask, list(msg.args)]
             if handler.ircv3:
@@ -401,25 +397,21 @@ class IRC:
                 params.insert(1, msg.command)
 
             if handler.awaitable:
-                # This may be called from another thread
-                self._loop.call_soon_threadsafe(
-                    lambda: self._loop.create_task(handler.func(*params))
-                )
-            elif self._executor is not None:
-                self._executor.submit(handler.func, *params)
+                await handler.func(*params)
             else:
-                threading.Thread(target=handler.func, args=params).start()
+                # Run non-async handlers in the event loop's default executor
+                await self._loop.run_in_executor(None, handler.func, *params)
 
     # Launch handlers
-    def handle_msg(self, msg):
+    async def handle_msg(self, msg):
         handled = False
         for handlers in (_global_handlers, self._handlers):
             if msg.command in handlers:
-                self._start_handler(handlers[msg.command], msg)
+                await self._start_handler(handlers[msg.command], msg)
                 handled = True
 
             if None in handlers:
-                self._start_handler(handlers[None], msg)
+                await self._start_handler(handlers[None], msg)
 
         return handled
 
@@ -435,24 +427,13 @@ class IRC:
             if not handled:
                 self.finish_negotiation(cap)
 
-    # The main loop
-    def _main(self):
-        with self._send_lock:
-            # Make sure self._main_thread is set
-            loop = self._loop = asyncio.new_event_loop()
-            self._main_thread = threading.current_thread()
-
-        try:
-            loop.run_until_complete(self._async_main())
-        finally:
-            loop.close()
-
     async def _send_initial_msgs(self):
         await self.quote('CAP LS 302', force=True)
         await self.quote('USER', self.ident, '0', '*', ':' + self.realname,
                          force=True)
         await self.quote('NICK', self.nick, force=True)
 
+    # The main loop
     async def _async_main(self):
         ctx = None
         if self.ssl:
@@ -485,7 +466,6 @@ class IRC:
                 self.debug('Failed to reconnect, trying again in 5 seconds.')
                 await asyncio.sleep(5)
 
-
         self.debug('Main loop running!')
         while True:
             try:
@@ -514,7 +494,7 @@ class IRC:
                 if self.persist:
                     await asyncio.sleep(5)
                     self.debug('Reconnecting...')
-                    self.connect()
+                    await self.connect()
                 return
 
             line_str = line.rstrip(b'\r\n').decode('utf-8', 'replace')
@@ -523,17 +503,24 @@ class IRC:
                 try:
                     msg = self._parse(line_str)
                     if isinstance(msg, IRCMessage):
-                        self.handle_msg(msg)
+                        await self.handle_msg(msg)
                     else:
-                        self.debug('Ignored message:', parsed_line)
-                except:
+                        self.debug('Ignored message:', line_str)
+                except Exception:
                     import traceback
                     traceback.print_exc()
 
-    def wait_until_disconnected(self, *, _timeout=None):
-        # The main thread may be replaced on reconnects
-        while self._main_thread and self._main_thread.is_alive():
-            self._main_thread.join(_timeout)
+    async def wait_until_disconnected(self):
+        """Wait until the IRC connection is closed.
+        
+        This can be used with asyncio.gather() to wait for multiple connections:
+        await asyncio.gather(irc1.wait_until_disconnected(), irc2.wait_until_disconnected())
+        """
+        if self._task:
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
 
 # Handle some IRC messages by default.
 @Handler('001')
@@ -551,15 +538,15 @@ async def _handler(irc, hostmask, args):
         irc.debug('*** Joining channels...', irc.channels)
         await irc.quote('JOIN', ','.join(irc.channels))
 
-    with irc._send_lock:
-        sendq, irc._sendq = irc._sendq, None
+    # Handle queued messages
+    sendq, irc._sendq = irc._sendq, None
     if sendq:
         for tags, args in sendq:
             await irc.quote(*args, tags=tags)
 
 @Handler('PING')
 async def _handler(irc, hostmask, args):
-    irc.send('PONG', *args, force=True)
+    await irc.send('PONG', *args, force=True)
 
 @Handler('PONG')
 async def _handler(irc, hostmask, args):
@@ -567,7 +554,7 @@ async def _handler(irc, hostmask, args):
         irc._pinged = False
 
 @Handler('432', '433')
-def _handler(irc, hostmask, args):
+async def _handler(irc, hostmask, args):
     if not irc.connected:
         try:
             return int(irc.nick[0])
@@ -579,23 +566,23 @@ def _handler(irc, hostmask, args):
             'is invalid. Trying again with', repr(irc.current_nick + '_') +
             '...')
         irc.current_nick += '_'
-        irc.quote('NICK', irc.current_nick, force=True)
+        await irc.quote('NICK', irc.current_nick, force=True)
 
 @Handler('NICK')
-def _handler(irc, hostmask, args):
+async def _handler(irc, hostmask, args):
     if hostmask[0].lower() == irc.current_nick.lower():
         irc.current_nick = args[-1]
 
 @Handler('PRIVMSG')
-def _handler(irc, hostmask, args):
+async def _handler(irc, hostmask, args):
     if not version:
         return
     if args[-1].startswith('\x01VERSION') and args[-1].endswith('\x01'):
-        irc.ctcp(hostmask[0], 'VERSION', version, reply=True)
+        await irc.ctcp(hostmask[0], 'VERSION', version, reply=True)
 
 # Handle IRCv3 capabilities
 @Handler('CAP')
-def _handler(irc, hostmask, args):
+async def _handler(irc, hostmask, args):
     if len(args) < 3:
         return
     cmd = args[1].upper()
@@ -616,17 +603,17 @@ def _handler(irc, hostmask, args):
         if irc.connected is None:
             return
         elif req:
-            irc.quote('CAP REQ', ':' + ' '.join(req), force=True)
+            await irc.quote('CAP REQ', ':' + ' '.join(req), force=True)
         elif cmd == 'LS' and not irc._unhandled_caps and args[2] != '*':
             irc._unhandled_caps = None
-            irc.quote('CAP END', force=True)
+            await irc.quote('CAP END', force=True)
     elif cmd == 'ACK':
         caps = args[-1].split(' ')
         for cap in caps:
             irc._handle_cap(cap)
     elif cmd == 'NAK':
         irc._unhandled_caps = None
-        irc.quote('CAP END', force=True)
+        await irc.quote('CAP END', force=True)
     elif cmd == 'DEL':
         for cap in args[-1].split(' '):
             cap = cap.lower()
@@ -635,59 +622,56 @@ def _handler(irc, hostmask, args):
 
 # SASL
 @Handler('IRCv3 SASL')
-def _handler(irc, hostmask, args):
+async def _handler(irc, hostmask, args):
     if irc.ns_identity and (len(args) < 2 or 'PLAIN' in
             args[-1].upper().split(',')):
-        irc.quote('AUTHENTICATE PLAIN', force=True)
+        await irc.quote('AUTHENTICATE PLAIN', force=True)
     else:
-        irc.quote('AUTHENTICATE *', force=True)
+        await irc.quote('AUTHENTICATE *', force=True)
         irc.finish_negotiation('sasl')
 
 @Handler('AUTHENTICATE')
-def _handler(irc, hostmask, args):
+async def _handler(irc, hostmask, args):
     if args and args[0] == '+':
         from base64 import b64encode
         irc._sasl = True
         pw = '{0}\x00{0}\x00{1}'.format(*irc.ns_identity).encode('utf-8')
-        irc.quote('AUTHENTICATE', b64encode(pw).decode('utf-8'), force=True)
+        await irc.quote('AUTHENTICATE', b64encode(pw).decode('utf-8'), force=True)
 
 @Handler('904', '905')
-def _handler(irc, hostmask, args):
+async def _handler(irc, hostmask, args):
     if irc._sasl:
         irc._sasl = False
-        irc.quote('AUTHENTICATE *', force=True)
+        await irc.quote('AUTHENTICATE *', force=True)
 
 @Handler('902', '903', '904', '905')
-def _handler(irc, hostmask, args):
+async def _handler(irc, hostmask, args):
     irc.finish_negotiation('sasl')
 
 # STS
 @Handler('IRCv3 STS')
-def _handler(irc, hostmask, args):
+async def _handler(irc, hostmask, args):
     if not irc.ssl and len(args) == 2:
         try:
             port = int(_tag_list_to_dict(args[1].split(','))['port'])
         except (IndexError, KeyError, ValueError):
             return
 
-        # Stop irc.wait_until_disconnected() from returning early
-        irc._main_thread = threading.current_thread()
-
         persist = irc.persist
-        irc.disconnect()
+        await irc.disconnect()
         irc.debug('STS detected, enabling TLS/SSL and changing the port to ',
                   port)
         irc.port = port
         irc.ssl = True
-        time.sleep(1)
-        irc.connect()
+        await asyncio.sleep(1)
+        await irc.connect()
         irc.persist = persist
     else:
         irc.finish_negotiation('sts')
 
 # Maximum line length
 @Handler('IRCv3 oragono.io/maxline-2')
-def _handler(irc, hostmask, args):
+async def _handler(irc, hostmask, args):
     try:
         irc.msglen = max(int(args[-1]), 512)
     except ValueError:
@@ -697,7 +681,7 @@ def _handler(irc, hostmask, args):
 
 # Handle ISUPPORT messages
 @Handler('005')
-def _handler(irc, hostmask, args):
+async def _handler(irc, hostmask, args):
     isupport = _tag_list_to_dict(args[1:-1])
 
     # Try and auto-detect integers

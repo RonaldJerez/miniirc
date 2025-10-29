@@ -43,6 +43,7 @@ htmlcov/
 nosetests.xml
 coverage.xml
 *,cover
+.pytest_cache
 
 # Translations
 *.mo
@@ -59,3 +60,12 @@ target/
 
 # Mypy
 .mypy_cache/
+
+# UV Related
+.python-version
+pyproject.toml
+uv.lock
+.venv
+
+# Others
+example_*

@@ -2,9 +2,10 @@
 # This allows type checking without breaking compatibility or making the main
 #   file slower to load.
 
-import atexit, concurrent.futures, errno, io, threading, time, socket, ssl, sys
+import io
+import sys
 from typing import (Any, Callable, Dict, Iterable, List, Mapping, Optional,
-                    Set, Tuple, Union, overload)
+                    Set, Tuple, Union, overload, NamedTuple)
 
 if sys.version_info >= (3, 8):
     from typing import Literal
@@ -24,9 +25,10 @@ _default_caps: Set[str] = {'account-tag', 'cap-notify', 'chghost',
 # Get the certificate list.
 get_ca_certs: Callable[[], Optional[str]]
 try:
-    from certifi import where as get_ca_certs
+    from certifi import where as get_ca_certs # type: ignore
 except ImportError:
-    get_ca_certs = lambda : None
+    def get_ca_certs():
+        pass
 
 _handler_func_1 = Callable[['IRC', Tuple[str, str, str], List[str]], Any]
 _handler_func_2 = Callable[['IRC', Tuple[str, str, str],
@@ -54,8 +56,12 @@ def _tags_to_dict(tag_list: Union[str, List[str]],
         separator: Optional[str] = ';') -> Dict[str, Union[str, bool]]: ...
 
 # Create the IRCv2/3 parser
-def ircv3_message_parser(msg: str) -> Tuple[str, Tuple[str, str, str],
-        Dict[str, Union[str, bool]], List[str]]: ...
+IRCMessage = NamedTuple('IRCMessage', [
+    ('command', str),
+    ('hostmask', Tuple[str, str, str]),
+    ('tags', Dict[str, Union[str, bool]]),
+    ('args', List[str]) ])
+def ircv3_message_parser(msg: str) -> IRCMessage: ...
 
 # Escape tags
 def _escape_tag(tag: str) -> str: ...
@@ -99,23 +105,23 @@ class IRC:
     def debug(self, *args: Any, **kwargs) -> None: ...
 
     # Send raw messages
-    def quote(self, *msg: str, force: Optional[bool] = None,
+    async def quote(self, *msg: str, force: Optional[bool] = None,
         tags: Optional[Mapping[str, Union[str, bool]]] = None) -> None: ...
 
-    def send(self, *msg: str, force: Optional[bool] = None,
+    async def send(self, *msg: str, force: Optional[bool] = None,
         tags: Optional[Mapping[str, Union[str, bool]]] = None) -> None: ...
 
     # User-friendly msg, notice, and ctcp functions.
-    def msg(self, target: str, *msg: str,
+    async def msg(self, target: str, *msg: str,
         tags: Optional[Mapping[str, Union[str, bool]]] = None) -> None: ...
 
-    def notice(self, target: str, *msg: str,
+    async def notice(self, target: str, *msg: str,
         tags: Optional[Mapping[str, Union[str, bool]]] = None) -> None: ...
 
-    def ctcp(self, target: str, *msg: str, reply: bool = False,
+    async def ctcp(self, target: str, *msg: str, reply: bool = False,
         tags: Optional[Mapping[str, Union[str, bool]]] = None) -> None: ...
 
-    def me(self, target: str, *msg: str,
+    async def me(self, target: str, *msg: str,
         tags: Optional[Mapping[str, Union[str, bool]]] = None) -> None: ...
 
     # Allow per-connection handlers
@@ -136,10 +142,10 @@ class IRC:
         -> Callable[[_handler_func_4], _handler_func_4]: ...
 
     # The connect function
-    def connect(self) -> None: ...
+    async def connect(self) -> None: ...
 
     # An easier way to disconnect
-    def disconnect(self, msg: Optional[str] = None, *,
+    async def disconnect(self, msg: Optional[str] = None, *,
         auto_reconnect: bool = False) -> None: ...
 
     # Finish capability negotiation
@@ -152,7 +158,7 @@ class IRC:
 
     # Initialize the class
     def __init__(self, ip: str, port: int, nick: str,
-        channels: Union[Iterable[str], str] = None, *,
+        channels: Optional[Union[Iterable[str], str]] = None, *,
         ssl: Optional[bool] = None, ident: Optional[str] = None,
         realname: Optional[str] = None, persist: bool = True,
         debug: Union[bool, io.TextIOWrapper, _Logfile] = False,
@@ -160,5 +166,4 @@ class IRC:
         auto_connect: bool = True, ircv3_caps: Optional[Set[str]] = None,
         connect_modes: Optional[str] = None,
         quit_message: str = 'I grew sick and died.', ping_interval: int = 60,
-        verify_ssl: bool = True,
-        executor: Optional[concurrent.futures.ThreadPoolExecutor]) -> None: ...
+        verify_ssl: bool = True) -> None: ...

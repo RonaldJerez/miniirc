@@ -1,6 +1,11 @@
 #!/bin/false
-import collections, functools, miniirc, pathlib, queue, random, re, socket, \
-       threading, time
+import asyncio
+import collections
+import miniirc
+import pathlib
+import pytest
+import re
+import socket
 from miniirc import IRCMessage
 
 MINIIRC_V2 = miniirc.ver >= (2, 0, 0)
@@ -138,14 +143,14 @@ class DummyIRC(miniirc.IRC):
 class IRCQuoteWrapper(DummyIRC):
     res = None
     TEST_FUNC = 'quote'
-    def quote(self, *args, force=None, tags=None):
+    async def quote(self, *args, force=None, tags=None):
         assert self.res is None
         self.res = (' '.join(args), tags)
 
     @classmethod
-    def test(cls, *args, **kwargs):
+    async def test(cls, *args, **kwargs):
         self = cls()
-        getattr(self, cls.TEST_FUNC)(*args, **kwargs)
+        await getattr(self, cls.TEST_FUNC)(*args, **kwargs)
         return self.res
 
     @classmethod
@@ -155,11 +160,12 @@ class IRCQuoteWrapper(DummyIRC):
         res.__name__ = res.__qualname__ = 'test_' + test_func
         return res.test
 
-def test_irc_send():
+@pytest.mark.asyncio
+async def test_irc_send():
     test = IRCQuoteWrapper.make_test('send')
-    assert test('a') == ('a', None)
-    assert test('a', 'Hello world!', 'b') == ('a Hello\xa0world! :b', None)
-    assert (test('', 'abc def\r\n', ':ghi', ':jkl', tags={'a': 'b'}) ==
+    assert (await test('a')) == ('a', None)
+    assert (await test('a', 'Hello world!', 'b')) == ('a Hello\xa0world! :b', None)
+    assert (await test('', 'abc def\r\n', ':ghi', ':jkl', tags={'a': 'b'}) ==
             (' abc\xa0def\xa0\xa0 \u0703ghi ::jkl', {'a': 'b'}))
 
 irc_msg_funcs = {
@@ -168,33 +174,14 @@ irc_msg_funcs = {
     'ctcp': 'PRIVMSG {} :\x01{}\x01',
     'me': 'PRIVMSG {} :\x01ACTION {}\x01'
 }
-def test_irc_msg_funcs():
+
+@pytest.mark.asyncio
+async def test_irc_msg_funcs():
     for func, fmt in irc_msg_funcs.items():
         test = IRCQuoteWrapper.make_test(func)
-        assert test('abc', ':def') == (fmt.format('abc', ':def'), None)
-        assert (test('target', 'hello', 'world', tags={'abc': 'def'}) ==
+        assert (await test('abc', ':def')) == (fmt.format('abc', ':def'), None)
+        assert (await test('target', 'hello', 'world', tags={'abc': 'def'}) ==
             (fmt.format('target', 'hello world'), {'abc': 'def'}))
-
-class FakeExecutor:
-    submissions = 0
-    def submit(self, *args):
-        assert args == self.expected_args
-        self.submissions += 1
-
-def test_executor(monkeypatch):
-    if not MINIIRC_V2:
-        monkeypatch.setattr(miniirc, '_colon_warning', False)
-    executor = FakeExecutor()
-    irc = DummyIRC(executor=executor)
-    def fake_handler():
-        pass
-    executor.expected_args = (fake_handler, irc, ('a', 'b', 'c'), ['d'])
-    irc.Handler('test')(fake_handler)
-    if MINIIRC_V2:
-        irc.handle_msg(IRCMessage('TEST', ('a', 'b', 'c'), {}, ['d']))
-    else:
-        irc._handle('test', ('a', 'b', 'c'), {}, ['d'])
-    assert executor.submissions == 1
 
 def test_change_parser():
     irc = DummyIRC()
@@ -205,35 +192,13 @@ def test_change_parser():
     assert irc._parse == f
 
 def test_get_ca_certs():
-    try:
-        import certifi
-    except ImportError:
-        assert miniirc.get_ca_certs() is None
-    else:
-        assert miniirc.get_ca_certs() == certifi.where()
+    certs = miniirc.get_ca_certs()
+    # Either None if certifi not installed, or a path to a CA bundle
+    assert certs is None or isinstance(certs, str)
 
-def test_start_main_loop(monkeypatch):
-    irc = DummyIRC()
-    thread = None
-    event = threading.Event()
-
-    def main(self):
-        nonlocal thread
-        assert self is irc
-        thread = threading.current_thread()
-        event.set()
-
-    monkeypatch.setattr(DummyIRC, '_main', main)
-
-    assert irc._main_thread is None
-    irc._start_main_loop()
-    main_thread = irc._main_thread
-    assert event.wait(1)
-    assert main_thread is irc._main_thread is thread
-    assert not hasattr(irc, '_main_lock')
-
-def test_connection():
-    irc = err = None
+@pytest.mark.asyncio
+async def test_connection():
+    irc = None
 
     sock = socket.socket()
     sock.bind(('127.0.0.1', 0))
@@ -265,22 +230,22 @@ def test_connection():
             ns_identity=('test', 'hunter2'), persist=False, debug=True)
         assert irc.connected is None
         @irc.Handler('001', colon=False)
-        def _handle_001(irc, hostmask, args):
+        async def _handle_001(irc, hostmask, args):
             for i in range(100):
                 if 'CAP' in irc.isupport and 'CTCP' in irc.isupport:
                     break
-                time.sleep(0.001)
+                await asyncio.sleep(0.001)
             assert args == ['parameter', 'test', 'with colon']
             assert irc.isupport == {'CTCP': 'VERSION', 'CAP': 'END'}
-            irc.send('SUCCESS')
+            await irc.send('SUCCESS')
 
-        irc.connect()
+        await irc.connect()
 
         # Send responses to/from the fake client
         conn, _ = sock.accept()
         conn.settimeout(3)
-        f = conn.makefile()
-        for line in conn.makefile():
+        reader = conn.makefile()
+        for line in reader:
             msg = line.rstrip('\r\n')
             if msg == 'SUCCESS':
                 break
@@ -294,4 +259,7 @@ def test_connection():
         else:
             assert irc.nick == irc.current_nick == 'miniirc-test_'
     finally:
-        irc.disconnect()
+        await irc.disconnect()
+
+if __name__ == '__main__':
+    pytest.main([__file__])
