@@ -5,72 +5,44 @@ import miniirc
 import pathlib
 import pytest
 import re
-import socket
 from miniirc import IRCMessage
 
-MINIIRC_V2 = miniirc.ver >= (2, 0, 0)
-if MINIIRC_V2:
-    def fill_in_hostmask(cmd, hostmask):
-        while len(hostmask) < 3:
-            hostmask += ('',)
-        return hostmask[:3]
+def fill_in_hostmask(cmd, hostmask):
+    while len(hostmask) < 3:
+        hostmask += ('',)
+    return hostmask[:3]
 
-    def test_fill_in_hostmask():
-        assert fill_in_hostmask('A', ()) == ('', '', '')
-        assert fill_in_hostmask('A', ('B',)) == ('B', '', '')
-        assert fill_in_hostmask('A', ('B', 'C')) == ('B', 'C', '')
-        assert fill_in_hostmask('A', ('B', 'C', 'D')) == ('B', 'C', 'D')
-else:
-    def fill_in_hostmask(cmd, hostmask):
-        if len(hostmask) == 0:
-            return (cmd, cmd, cmd)
-        while len(hostmask) < 3:
-            hostmask += (hostmask[-1],)
-        return hostmask[:3]
-
-    def test_fill_in_hostmask():
-        assert fill_in_hostmask('A', ()) == ('A', 'A', 'A')
-        assert fill_in_hostmask('A', ('B',)) == ('B', 'B', 'B')
-        assert fill_in_hostmask('A', ('B', 'C')) == ('B', 'C', 'C')
-        assert fill_in_hostmask('A', ('B', 'C', 'D')) == ('B', 'C', 'D')
+def test_fill_in_hostmask():
+    assert fill_in_hostmask('A', ()) == ('', '', '')
+    assert fill_in_hostmask('A', ('B',)) == ('B', '', '')
+    assert fill_in_hostmask('A', ('B', 'C')) == ('B', 'C', '')
+    assert fill_in_hostmask('A', ('B', 'C', 'D')) == ('B', 'C', 'D')
 
 def test_message_parser():
     p = miniirc.ircv3_message_parser
     for i in range(4):
         hostmask = fill_in_hostmask('PRIVMSG', ('n', 'u', 'h')[:i])
         hostmask_s = ':n!u@h'[:i * 2] + (' ' if i else '')
-        if MINIIRC_V2:
-            assert (p(hostmask_s + 'PRIVMSG #channel :Hello world!') ==
-                    IRCMessage('PRIVMSG', hostmask, {},
-                               ['#channel', 'Hello world!']))
-        else:
-            assert (p(hostmask_s + 'PRIVMSG #channel :Hello world!') ==
-                    ('PRIVMSG', hostmask, {}, ['#channel', ':Hello world!']))
+        assert (p(hostmask_s + 'PRIVMSG #channel :Hello world!') ==
+                IRCMessage('PRIVMSG', hostmask, {},
+                            ['#channel', 'Hello world!']))
 
     hostmask = fill_in_hostmask('Hi', ())
-    empty_tag = '' if MINIIRC_V2 else True
+    empty_tag = ''
     assert (p(r'@tag1=value\:\swith\s\\spaces\rand\nnewlines;tag2;tag3= Hi') ==
-            ('HI' if MINIIRC_V2 else 'Hi', hostmask,
+            ('HI', hostmask,
              {'tag1': 'value; with \\spaces\rand\nnewlines', 'tag2': empty_tag,
               'tag3': empty_tag}, []))
 
-if MINIIRC_V2:
-    def verify_handler(event, cmdhandler, colon, ircv3):
-        handler = miniirc._global_handlers[event][-1]
-        assert handler.cmdhandler == cmdhandler
-        assert not colon
-        assert handler.ircv3 == ircv3
-        assert not handler.awaitable
-else:
-    def verify_handler(event, cmdhandler, colon, ircv3):
-        func = miniirc._global_handlers[event][-1]
-        assert hasattr(func, 'miniirc_colon') == colon
-        assert hasattr(func, 'miniirc_cmd_arg') == cmdhandler
-        assert hasattr(func, 'miniirc_ircv3') == ircv3
+def verify_handler(event, cmdhandler, colon, ircv3):
+    handler = miniirc._global_handlers[event][-1]
+    assert handler.cmdhandler == cmdhandler
+    assert not colon
+    assert handler.ircv3 == ircv3
+    assert not handler.awaitable
+
 
 def test_Handler(monkeypatch):
-    if not MINIIRC_V2:
-        monkeypatch.setattr(miniirc, '_colon_warning', False)
     try:
         tmp, miniirc._global_handlers = miniirc._global_handlers, {}
         @miniirc.Handler('test', 1, ircv3=True, colon=False)
@@ -78,16 +50,10 @@ def test_Handler(monkeypatch):
             ...
         verify_handler('TEST', False, False, True)
 
-        if not MINIIRC_V2:
-            @miniirc.CmdHandler('test2', 2, colon=True)
-            def f2(irc, command, hostmask, args):
-                ...
-            verify_handler('2', True, True, False)
-
         @miniirc.CmdHandler()
         def f3(irc, command, hostmask, args):
             ...
-        verify_handler(None, True, not MINIIRC_V2, False)
+        verify_handler(None, True, False, False)
 
         expected = {
             'TEST': [f],
@@ -95,11 +61,8 @@ def test_Handler(monkeypatch):
             None: [f3]
         }
 
-        if MINIIRC_V2:
-            assert miniirc._global_handlers.keys() == expected.keys()
-        else:
-            expected['2'] = expected['TEST2'] = [f]
-            assert miniirc._global_handlers == expected
+        assert miniirc._global_handlers.keys() == expected.keys()
+
     finally:
         miniirc._global_handlers = tmp
 
@@ -259,11 +222,9 @@ async def test_connection():
 
         await irc.connect()
 
-        if MINIIRC_V2:
-            assert irc.nick == 'miniirc-test'
-            assert irc.current_nick == 'miniirc-test_'
-        else:
-            assert irc.nick == irc.current_nick == 'miniirc-test_'
+        assert irc.nick == 'miniirc-test'
+        assert irc.current_nick == 'miniirc-test_'
+
     finally:
         await irc.disconnect()
         server.close()
