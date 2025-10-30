@@ -58,7 +58,7 @@ def _add_handler(handlers, events, ircv3, cmdhandler, colon):
                 event = str(event).upper()
             if event not in handlers:
                 handlers[event] = []
-            if func not in handlers[event]:
+            if handler not in handlers[event]:
                 handlers[event].append(handler)
 
         return func
@@ -575,52 +575,90 @@ async def _handler(irc, hostmask, args):
     if hostmask[0].lower() == irc.current_nick.lower():
         irc.current_nick = args[-1]
 
-@Handler('PRIVMSG')
+@Handler('PRIVMSG', 'NOTICE', ircv3=True)
+async def _handler(irc, hostmask, tags, args):
+    if not args:
+        return
+
+    text = args[-1]
+    if text.startswith('\x01') and text.endswith('\x01') and len(text) > 2:
+        # Extract CTCP command and args
+        ctcp_content = text[1:-1]
+        ctcp_parts = ctcp_content.split(' ', 1)
+        ctcp_command = 'CTCP ' + ctcp_parts[0].upper()
+
+        # Create new args with CTCP content
+        ctcp_args = list(args[:-1])
+        if len(ctcp_parts) > 1:
+            ctcp_args.append(ctcp_parts[1])
+
+        # Create a modified message for CTCP handlers
+        ctcp_msg = IRCMessage(ctcp_command, hostmask, tags, ctcp_args)
+        await irc.handle_msg(ctcp_msg)
+
+@Handler('CTCP VERSION')
 async def _handler(irc, hostmask, args):
     if not version:
         return
-    if args[-1].startswith('\x01VERSION') and args[-1].endswith('\x01'):
-        await irc.ctcp(hostmask[0], 'VERSION', version, reply=True)
+    await irc.ctcp(hostmask[0], 'VERSION', version, reply=True)
 
 # Handle IRCv3 capabilities
 @Handler('CAP')
 async def _handler(irc, hostmask, args):
     if len(args) < 3:
         return
+    
     cmd = args[1].upper()
-    if cmd in ('LS', 'NEW'):
-        caps = args[-1].split(' ')
-        req = set()
-        if not irc._unhandled_caps:
-            irc._unhandled_caps = {}
-        for raw in caps:
-            raw = raw.split('=', 1)
-            cap = raw[0].lower()
-            if cap in irc.ircv3_caps:
-                irc._unhandled_caps[cap] = raw
-                if cap == 'sts':
-                    irc._handle_cap(cap)
-                else:
-                    req.add(cap)
-        if irc.connected is None:
-            return
-        elif req:
-            await irc.quote('CAP REQ', ':' + ' '.join(req), force=True)
-        elif cmd == 'LS' and not irc._unhandled_caps and args[2] != '*':
-            irc._unhandled_caps = None
-            await irc.quote('CAP END', force=True)
-    elif cmd == 'ACK':
-        caps = args[-1].split(' ')
-        for cap in caps:
-            await irc._handle_cap(cap)
-    elif cmd == 'NAK':
+    # caps = args[-1].split(' ')
+
+    msg = IRCMessage(f'CAP {cmd}', hostmask, {}, args)
+    await irc.handle_msg(msg)
+
+@Handler('CAP ACK')
+async def _handler(irc, hostmask, args):
+    caps = args[-1].split(' ')
+    for cap in caps:
+        await irc._handle_cap(cap)
+
+@Handler('CAP NAK')
+async def _handler(irc, hostmask, args):
+    irc._unhandled_caps = None
+    await irc.quote('CAP END', force=True)
+
+@CmdHandler('CAP LS', 'CAP NEW')
+async def _handler(irc, command, hostmask, args):
+    req = set()
+    
+    if not irc._unhandled_caps:
+        irc._unhandled_caps = {}
+
+    caps = args[-1].split(' ')
+    multiline = args[2] == '*'
+
+    for raw in caps:
+        raw = raw.split('=', 1)
+        cap = raw[0].lower()
+        if cap in irc.ircv3_caps:
+            irc._unhandled_caps[cap] = raw
+            if cap == 'sts':
+                irc._handle_cap(cap)
+            else:
+                req.add(cap)
+
+    if irc.connected is None:
+        return
+    elif req:
+        await irc.quote('CAP REQ', ':' + ' '.join(req), force=True)
+    elif command == 'CAP LS' and not irc._unhandled_caps and not multiline:
         irc._unhandled_caps = None
         await irc.quote('CAP END', force=True)
-    elif cmd == 'DEL':
-        for cap in args[-1].split(' '):
-            cap = cap.lower()
-            if cap in irc.active_caps:
-                irc.active_caps.remove(cap)
+
+@Handler('CAP DEL')
+async def _handler(irc, hostmask, caps):
+    for cap in caps:
+        cap = cap.lower()
+        if cap in irc.active_caps:
+            irc.active_caps.remove(cap)
 
 # SASL
 @Handler('IRCv3 SASL')
