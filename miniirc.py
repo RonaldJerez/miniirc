@@ -142,9 +142,9 @@ def _escape_tag(tag):
 def _dict_to_tags(tags):
     res = b'@'
     for tag, value in tags.items():
-        if value or value == '':
+        if value and value != '':
             etag = _escape_tag(tag).replace('=', '-')
-            if isinstance(value, str) and value:
+            if value and isinstance(value, str):
                 etag += '=' + _escape_tag(value)
             etag = (etag + ';').encode('utf-8')
             if len(res) + len(etag) > 4094:
@@ -172,6 +172,9 @@ class _Logfile:
 def _prune_arg(arg):
     if arg.startswith(':'):
         arg = '\u0703' + arg[1:]
+    elif not arg:
+        # Replace the argument with something to prevent misinterpretation
+        arg = ' '
     return arg.replace(' ', '\xa0').replace('\r', '\xa0').replace('\n', '\xa0')
 
 async def _suppress_oserror(coro):
@@ -194,7 +197,7 @@ class IRC:
                  realname=None, persist=True, debug=False, ns_identity=None,
                  auto_connect=True, ircv3_caps=None, connect_modes=None,
                  quit_message='I grew sick and died.', ping_interval=60,
-                 ping_timeout=None, verify_ssl=True, loop=None):
+                 ping_timeout=None, verify_ssl=True, server_password=None, loop=None):
         # Set basic variables
         self.ip = ip
         self.port = int(port)
@@ -214,6 +217,7 @@ class IRC:
         self.ping_interval = ping_interval
         self.ping_timeout = ping_timeout
         self.verify_ssl = verify_ssl
+        self.server_password = server_password
         self._task = None
         self._sendq = []
 
@@ -274,8 +278,8 @@ class IRC:
             return
 
         self.debug('>>>', *msg)
-        msg = (' '.join(msg).encode('utf-8').replace(b'\r', b' ')
-               .replace(b'\n', b' '))
+        msg = (' '.join(msg).replace('\x00', '\ufffd').encode('utf-8')
+               .replace(b'\r', b' ') .replace(b'\n', b' '))
 
         if len(msg) + 2 > self.msglen:
             msg = msg[:self.msglen - 2]
@@ -292,14 +296,14 @@ class IRC:
     async def send(self, command, *args, force=False, tags=None):
         if args:
             await self.quote(
-                command,
+                _prune_arg(command),
                 *map(_prune_arg, args[:-1]),
                 ':' + args[-1],
                 force=force,
                 tags=tags
             )
         else:
-            await self.quote(command, force=force, tags=tags)
+            await self.quote(_prune_arg(command), force=force, tags=tags)
 
     # User-friendly msg, notice, and CTCP functions.
     async def msg(self, target, *msg, tags=None):
@@ -430,6 +434,8 @@ class IRC:
                 await self.finish_negotiation(cap)
 
     async def _send_initial_msgs(self):
+        if self.server_password:
+            await self.quote('PASS', self.server_password, force=True)
         await self.quote('CAP LS 302', force=True)
         await self.quote('USER', self.ident, '0', '*', ':' + self.realname,
                          force=True)

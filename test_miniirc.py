@@ -82,7 +82,7 @@ def test_dict_to_tags():
     tags_dict = collections.OrderedDict((
         ('abc', True), ('def', False), ('ghi', ''), ('jkl', 'test\r\n; ')
     ))
-    assert dict_to_tags(tags_dict) == rb'@abc;ghi;jkl=test\r\n\:\s '
+    assert dict_to_tags(tags_dict) == rb'@abc;jkl=test\r\n\:\s '
 
 def test_logfile():
     msgs = []
@@ -104,7 +104,7 @@ class DummyIRC(miniirc.IRC):
         super().__init__(ip, port, nick, *args, **kwargs)
 
 class IRCQuoteWrapper(DummyIRC):
-    res = None
+    res: tuple | None  = None
     TEST_FUNC = 'quote'
     async def quote(self, *args, force=None, tags=None):
         assert self.res is None
@@ -129,7 +129,7 @@ async def test_irc_send():
     assert (await test('a')) == ('a', None)
     assert (await test('a', 'Hello world!', 'b')) == ('a Hello\xa0world! :b', None)
     assert (await test('', 'abc def\r\n', ':ghi', ':jkl', tags={'a': 'b'}) ==
-            (' abc\xa0def\xa0\xa0 \u0703ghi ::jkl', {'a': 'b'}))
+            ('\xa0 abc\xa0def\xa0\xa0 \u0703ghi ::jkl', {'a': 'b'}))
 
 irc_msg_funcs = {
     'msg': 'PRIVMSG {} :{}',
@@ -215,7 +215,8 @@ async def test_connection():
         @irc.Handler('005')
         async def _handle_005(irc, hostmask, args):
             state['count'] = state['count'] + 1
-            if state['count'] < 2: return
+            if state['count'] < 2:
+                return
             
             assert irc.isupport == {'CTCP': 'VERSION', 'CAP': 'END'}
             await irc.send('SUCCESS')

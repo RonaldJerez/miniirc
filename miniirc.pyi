@@ -3,22 +3,16 @@
 #   file slower to load.
 
 import io
-import sys
-from typing import (Any, Callable, Dict, Iterable, List, Mapping, Optional,
-                    Set, Tuple, Union, overload, NamedTuple)
-
-if sys.version_info >= (3, 8):
-    from typing import Literal
-else:
-    from typing_extensions import Literal
+from collections.abc import Callable, Iterable
+from typing import Any, Optional, Union, overload, NamedTuple, Literal
 
 # The version string and tuple
-ver: Tuple[int, int, int] = ...
+ver: tuple[int, int, int] = ...
 version: str = ...
 
 # __all__ and _default_caps
-__all__: List[str] = ['CmdHandler', 'Handler', 'IRC']
-_default_caps: Set[str] = {'account-tag', 'cap-notify', 'chghost',
+__all__: list[str] = ['CmdHandler', 'Handler', 'IRC']
+_default_caps: set[str] = {'account-tag', 'cap-notify', 'chghost',
     'draft/message-tags-0.2', 'invite-notify', 'message-tags',
     'server-time', 'sts'}
 
@@ -30,9 +24,9 @@ except ImportError:
     def get_ca_certs():
         pass
 
-_handler_func_1 = Callable[['IRC', Tuple[str, str, str], List[str]], Any]
-_handler_func_2 = Callable[['IRC', Tuple[str, str, str],
-                            Mapping[str, Union[str, bool]], List[str]], Any]
+_handler_func_1 = Callable[['IRC', tuple[str, str, str], list[str]], Any]
+_handler_func_2 = Callable[['IRC', tuple[str, str, str],
+                            dict[str, Union[str, bool]], list[str]], Any]
 @overload
 def Handler(*events: str, colon: bool = False, ircv3: Literal[False] = False) \
     -> Callable[[_handler_func_1], _handler_func_1]: ...
@@ -40,9 +34,9 @@ def Handler(*events: str, colon: bool = False, ircv3: Literal[False] = False) \
 def Handler(*events: str, colon: bool = False, ircv3: Literal[True]) \
     -> Callable[[_handler_func_2], _handler_func_2]: ...
 
-_handler_func_3 = Callable[['IRC', str, Tuple[str, str, str], List[str]], Any]
-_handler_func_4 = Callable[['IRC', str, Tuple[str, str, str],
-                            Mapping[str, Union[str, bool]], List[str]], Any]
+_handler_func_3 = Callable[['IRC', str, tuple[str, str, str], list[str]], Any]
+_handler_func_4 = Callable[['IRC', str, tuple[str, str, str],
+                            dict[str, Union[str, bool]], list[str]], Any]
 @overload
 def CmdHandler(*events: str, colon: bool = False,
     ircv3: Literal[False] = False) -> Callable[[_handler_func_3], _handler_func_3]: ...
@@ -51,23 +45,23 @@ def CmdHandler(*events: str, colon: bool = False, ircv3: Literal[True]) \
     -> Callable[[_handler_func_4], _handler_func_4]: ...
 
 # Parse IRCv3 tags
-_ircv3_tag_escapes: Dict[str, str] = {':': ';', 's': ' ', 'r': '\r', 'n': '\n'}
-def _tags_to_dict(tag_list: Union[str, List[str]],
-        separator: Optional[str] = ';') -> Dict[str, Union[str, bool]]: ...
+_ircv3_tag_escapes: dict[str, str] = {':': ';', 's': ' ', 'r': '\r', 'n': '\n'}
+def _tags_to_dict(tag_list: Union[str, list[str]],
+        separator: Optional[str] = ';') -> dict[str, Union[str, bool]]: ...
 
 # Create the IRCv2/3 parser
 IRCMessage = NamedTuple('IRCMessage', [
     ('command', str),
-    ('hostmask', Tuple[str, str, str]),
-    ('tags', Dict[str, Union[str, bool]]),
-    ('args', List[str]) ])
+    ('hostmask', tuple[str, str, str]),
+    ('tags', dict[str, Union[str, bool]]),
+    ('args', list[str]) ])
 def ircv3_message_parser(msg: str) -> IRCMessage: ...
 
 # Escape tags
 def _escape_tag(tag: str) -> str: ...
 
 # Convert a dict into an IRCv3 tags string
-def _dict_to_tags(tags: Mapping[str, Union[str, bool]]) -> bytes: ...
+def _dict_to_tags(tags: dict[str, Union[str, bool]]) -> bytes: ...
 
 # A wrapper for callable logfiles
 class _Logfile:
@@ -86,43 +80,44 @@ class IRC:
     port: int
     nick: str
     current_nick: str
-    channels: Set[str]
+    channels: set[str]
     ident: str
     realname: str
     ssl: Optional[bool]
     persist: bool
-    ircv3_caps: Set[str]
-    active_caps: Set[str]
-    isupport: Dict[str, Union[str, int]]
+    ircv3_caps: set[str]
+    active_caps: set[str]
+    isupport: dict[str, Union[str, int]]
     connect_modes: Optional[str]
     quit_message: str
     ping_interval: int
     verify_ssl: bool
+    server_password: Optional[str]
 
-    ns_identity: Union[Tuple[str, str], str]
+    ns_identity: Union[tuple[str, str], str]
 
     # Debug print()
     def debug(self, *args: Any, **kwargs) -> None: ...
 
     # Send raw messages
     async def quote(self, *msg: str, force: Optional[bool] = None,
-        tags: Optional[Mapping[str, Union[str, bool]]] = None) -> None: ...
+        tags: Optional[dict[str, Union[str, bool]]] = None) -> None: ...
 
     async def send(self, *msg: str, force: Optional[bool] = None,
-        tags: Optional[Mapping[str, Union[str, bool]]] = None) -> None: ...
+        tags: Optional[dict[str, Union[str, bool]]] = None) -> None: ...
 
     # User-friendly msg, notice, and ctcp functions.
     async def msg(self, target: str, *msg: str,
-        tags: Optional[Mapping[str, Union[str, bool]]] = None) -> None: ...
+        tags: Optional[dict[str, Union[str, bool]]] = None) -> None: ...
 
     async def notice(self, target: str, *msg: str,
-        tags: Optional[Mapping[str, Union[str, bool]]] = None) -> None: ...
+        tags: Optional[dict[str, Union[str, bool]]] = None) -> None: ...
 
     async def ctcp(self, target: str, *msg: str, reply: bool = False,
-        tags: Optional[Mapping[str, Union[str, bool]]] = None) -> None: ...
+        tags: Optional[dict[str, Union[str, bool]]] = None) -> None: ...
 
     async def me(self, target: str, *msg: str,
-        tags: Optional[Mapping[str, Union[str, bool]]] = None) -> None: ...
+        tags: Optional[dict[str, Union[str, bool]]] = None) -> None: ...
 
     # Allow per-connection handlers
     @overload
@@ -153,17 +148,22 @@ class IRC:
 
     # Change the message parser
     def change_parser(self, parser: Callable[[str],
-        Tuple[str, Tuple[str, str, str], Dict[str, Union[str, bool]],
-        List[str]]] = ircv3_message_parser) -> None: ...
+        tuple[str, tuple[str, str, str], dict[str, Union[str, bool]],
+        list[str]]] = ircv3_message_parser) -> None: ...
 
     # Initialize the class
     def __init__(self, ip: str, port: int, nick: str,
         channels: Optional[Union[Iterable[str], str]] = None, *,
-        ssl: Optional[bool] = None, ident: Optional[str] = None,
-        realname: Optional[str] = None, persist: bool = True,
+        ssl: Optional[bool] = None, 
+        ident: Optional[str] = None,
+        realname: Optional[str] = None, 
+        persist: bool = True,
         debug: Union[bool, io.TextIOWrapper, _Logfile] = False,
-        ns_identity: Optional[Union[Tuple[str, str], str]] = None,
-        auto_connect: bool = True, ircv3_caps: Optional[Set[str]] = None,
+        ns_identity: Optional[Union[tuple[str, str], str]] = None,
+        auto_connect: bool = True, 
+        ircv3_caps: Optional[set[str]] = None,
         connect_modes: Optional[str] = None,
-        quit_message: str = 'I grew sick and died.', ping_interval: int = 60,
-        verify_ssl: bool = True) -> None: ...
+        quit_message: str = 'I grew sick and died.', 
+        ping_interval: int = 60,
+        verify_ssl: bool = True, 
+        server_password: Optional[str] = None) -> None: ...
