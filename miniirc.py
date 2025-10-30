@@ -22,7 +22,7 @@ __version__ = '2.0.0a9'
 __all__ = ['CmdHandler', 'Handler', 'IRC']
 _default_caps = {'account-notify', 'account-tag', 'away-notify', 'cap-notify',
                 'chghost', 'extended-join', 'invite-notify', 'message-tags',
-                'oragono.io/maxline-2', 'server-time', 'sts'}
+                'server-time', 'sts'}
 
 # Get the certificate list.
 try:
@@ -708,16 +708,6 @@ async def _handler(irc, hostmask, args):
         irc.persist = persist
     else:
         await irc.finish_negotiation('sts')
-
-# Maximum line length
-@Handler('CAP ACK oragono.io/maxline-2')
-async def _handler(irc, hostmask, args):
-    try:
-        irc.msglen = max(int(args[-1]), 512)
-    except ValueError:
-        pass
-
-    await irc.finish_negotiation(args[0])
 
 # Handle ISUPPORT messages
 @Handler('005')

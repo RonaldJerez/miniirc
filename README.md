@@ -128,7 +128,7 @@ space however not interpreted as one).
 | `connected`   | A boolean (or `None`), `True` when miniirc is connected, `False` when miniirc is connecting, and `None` when miniirc is not connected. |
 | `current_nick` | *New in v1.4.3.* The bot/client's current nickname, currently an alias for `irc.nick`. Do not modify this, and use this instead of `irc.nick` when getting the bot's current nickname for compatibility with miniirc v2.0.0. |
 | `isupport`    | A `dict` with values (not necessarily strings) from `ISUPPORT` messages sent to the client. |
-| `msglen`      | The maximum length (in bytes) of messages (including `\r\n`). This is automatically changed if the server supports the `oragono.io/maxline-2` capability. |
+| `msglen`      | The maximum length (in bytes) of messages (including `\r\n`). |
 | `nick`        | The nickname to use when connecting to IRC. Until miniirc v2.0.0, you should only modify this while disconnected, as it is currently automatically updated with nickname changes. |
 
 The following arguments passed to `miniirc.IRC` are also available: `ip`,

@@ -20,7 +20,7 @@ version: str = ...
 __all__: List[str] = ['CmdHandler', 'Handler', 'IRC']
 _default_caps: Set[str] = {'account-tag', 'cap-notify', 'chghost',
     'draft/message-tags-0.2', 'invite-notify', 'message-tags',
-    'oragono.io/maxline-2', 'server-time', 'sts'}
+    'server-time', 'sts'}
 
 # Get the certificate list.
 get_ca_certs: Callable[[], Optional[str]]
