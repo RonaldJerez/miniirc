@@ -423,7 +423,7 @@ class IRC:
         self.active_caps.add(cap)
         if self._unhandled_caps and cap in self._unhandled_caps:
             handled = await self.handle_msg(IRCMessage(
-                ('IRCv3 ' + cap).upper(), ('', '', ''), {},
+                ('CAP ACK ' + cap).upper(), ('', '', ''), {},
                 self._unhandled_caps[cap]
             ))
             if not handled:
@@ -611,7 +611,7 @@ async def _handler(irc, hostmask, args):
     cmd = args[1].upper()
     # caps = args[-1].split(' ')
 
-    msg = IRCMessage(f'CAP {cmd}', hostmask, {}, args)
+    msg = IRCMessage('CAP ' + cmd, hostmask, {}, args)
     await irc.handle_msg(msg)
 
 @Handler('CAP ACK')
@@ -661,7 +661,7 @@ async def _handler(irc, hostmask, caps):
             irc.active_caps.remove(cap)
 
 # SASL
-@Handler('IRCv3 SASL')
+@Handler('CAP ACK SASL')
 async def _handler(irc, hostmask, args):
     if irc.ns_identity and (len(args) < 2 or 'PLAIN' in
             args[-1].upper().split(',')):
@@ -689,7 +689,7 @@ async def _handler(irc, hostmask, args):
     await irc.finish_negotiation('sasl')
 
 # STS
-@Handler('IRCv3 STS')
+@Handler('CAP ACK STS')
 async def _handler(irc, hostmask, args):
     if not irc.ssl and len(args) == 2:
         try:
@@ -710,7 +710,7 @@ async def _handler(irc, hostmask, args):
         await irc.finish_negotiation('sts')
 
 # Maximum line length
-@Handler('IRCv3 oragono.io/maxline-2')
+@Handler('CAP ACK oragono.io/maxline-2')
 async def _handler(irc, hostmask, args):
     try:
         irc.msglen = max(int(args[-1]), 512)
