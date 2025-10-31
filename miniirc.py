@@ -265,7 +265,8 @@ class IRC:
                 except RuntimeError:
                     loop = asyncio.new_event_loop()
                     asyncio.set_event_loop(loop)
-            loop.create_task(self.connect())
+            self._loop = loop
+            loop.create_task(self.connect(loop=loop))
         elif loop is not None:
             raise TypeError('loop cannot be specified with auto_connect=False')
 
