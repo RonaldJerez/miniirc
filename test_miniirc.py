@@ -7,58 +7,51 @@ import pytest
 import re
 from miniirc import IRCMessage
 
-def fill_in_hostmask(cmd, hostmask):
+def fill_in_hostmask(hostmask):
     while len(hostmask) < 3:
         hostmask += ('',)
     return hostmask[:3]
 
 def test_fill_in_hostmask():
-    assert fill_in_hostmask('A', ()) == ('', '', '')
-    assert fill_in_hostmask('A', ('B',)) == ('B', '', '')
-    assert fill_in_hostmask('A', ('B', 'C')) == ('B', 'C', '')
-    assert fill_in_hostmask('A', ('B', 'C', 'D')) == ('B', 'C', 'D')
+    assert fill_in_hostmask(()) == ('', '', '')
+    assert fill_in_hostmask(('B',)) == ('B', '', '')
+    assert fill_in_hostmask(('B', 'C')) == ('B', 'C', '')
+    assert fill_in_hostmask(('B', 'C', 'D')) == ('B', 'C', 'D')
 
 def test_message_parser():
     p = miniirc.ircv3_message_parser
     for i in range(4):
-        hostmask = fill_in_hostmask('PRIVMSG', ('n', 'u', 'h')[:i])
+        hostmask = fill_in_hostmask(('n', 'u', 'h')[:i])
         hostmask_s = ':n!u@h'[:i * 2] + (' ' if i else '')
         assert (p(hostmask_s + 'PRIVMSG #channel :Hello world!') ==
                 IRCMessage('PRIVMSG', hostmask, {},
                             ['#channel', 'Hello world!']))
 
-    hostmask = fill_in_hostmask('Hi', ())
+    hostmask = fill_in_hostmask(())
     empty_tag = ''
     assert (p(r'@tag1=value\:\swith\s\\spaces\rand\nnewlines;tag2;tag3= Hi') ==
             ('HI', hostmask,
              {'tag1': 'value; with \\spaces\rand\nnewlines', 'tag2': empty_tag,
               'tag3': empty_tag}, []))
 
-def verify_handler(event, cmdhandler, colon, ircv3):
+def verify_handler(event):
     handler = miniirc._global_handlers[event][-1]
-    assert handler.cmdhandler == cmdhandler
-    assert not colon
-    assert handler.ircv3 == ircv3
-    assert not handler.awaitable
-
+    assert handler.awaitable
+    assert hasattr(handler, 'signature')
 
 def test_Handler(monkeypatch):
     try:
         tmp, miniirc._global_handlers = miniirc._global_handlers, {}
-        @miniirc.Handler('test', 1, ircv3=True, colon=False)
-        def f(irc, hostmask, tags, args):
+        
+        @miniirc.Handler('test', '1')
+        async def f(irc, *, command, args):
             ...
-        verify_handler('TEST', False, False, True)
-
-        @miniirc.CmdHandler()
-        def f3(irc, command, hostmask, args):
-            ...
-        verify_handler(None, True, False, False)
+        verify_handler('TEST')
+        verify_handler('1')
 
         expected = {
             'TEST': [f],
             '1': [f],
-            None: [f3]
         }
 
         assert miniirc._global_handlers.keys() == expected.keys()
@@ -207,13 +200,13 @@ async def test_connection():
         assert irc.connected is None
 
         @irc.Handler('001')
-        async def _handle_001(irc, hostmask, args):
+        async def _handle_001(args):
             assert args == ['miniirc-test_', 'parameter', 'test', 'with colon']
 
         state = {'count': 0}
         
         @irc.Handler('005')
-        async def _handle_005(irc, hostmask, args):
+        async def _handle_005(irc):
             state['count'] = state['count'] + 1
             if state['count'] < 2:
                 return
@@ -232,6 +225,71 @@ async def test_connection():
         await server.wait_closed()
 
     await irc.wait_until_disconnected()
+
+def test_handler_signatures():
+    try:
+        tmp, miniirc._global_handlers = miniirc._global_handlers, {}
+
+        # Test simple handler with only args
+        @miniirc.Handler('TEST1')
+        async def handler1(irc, args): ...
+        handler = miniirc._global_handlers['TEST1'][-1]
+        assert len(handler.signature.parameters) == 2
+        
+        # Test handler with command parameter
+        @miniirc.Handler('TEST2')
+        async def handler2(command, tags): ...
+        handler = miniirc._global_handlers['TEST2'][-1]
+        assert len(handler.signature.parameters) == 2
+
+        # Test handler with all parameters
+        @miniirc.Handler('TEST3')
+        async def handler4(irc, command, hostmask, tags, args): ...
+        handler = miniirc._global_handlers['TEST3'][-1]
+        assert len(handler.signature.parameters) == 5
+
+        # Test wrong handler (invalid test2 parameter)
+        with pytest.raises(TypeError):
+            @miniirc.Handler('TEST4')
+            async def handler_wrong(command, args, test2): ...
+        
+        # Test wrong parameters *args, **kwargs
+        with pytest.raises(TypeError):
+            @miniirc.Handler('TEST5')
+            async def handler_wrong2(irc, *args): ...
+
+        with pytest.raises(TypeError):
+            @miniirc.Handler('TEST6')
+            async def handler_wrong3(irc, command, **kwargs): ...
+
+    finally:
+        miniirc._global_handlers = tmp
+
+@pytest.mark.asyncio
+async def test_handler_execution():
+    irc = DummyIRC()
+    results = []
+
+    @irc.Handler('TEST')
+    async def handler1(irc, args):
+        results.append(('handler1', args))
+
+    @irc.Handler('TEST')
+    async def handler2(irc, command, args):
+        results.append(('handler2', command, args))
+
+    @irc.Handler('TEST')
+    async def handler3(irc, command, hostmask, tags, args):
+        results.append(('handler3', command, hostmask, tags, args))
+
+    msg = IRCMessage('TEST', ('nick', 'user', 'host'), {'tag': 'value'}, ['arg1', 'arg2'])
+    await irc.handle_msg(msg)
+
+    assert results == [
+        ('handler1', ['arg1', 'arg2']),
+        ('handler2', 'TEST', ['arg1', 'arg2']),
+        ('handler3', 'TEST', ('nick', 'user', 'host'), {'tag': 'value'}, ['arg1', 'arg2'])
+    ]
 
 if __name__ == '__main__':
     pytest.main([__file__])

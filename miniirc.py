@@ -12,6 +12,7 @@ import ssl
 import sys
 import types
 import warnings
+import inspect
 
 # The version string and tuple
 ver = __version_info__ = (2,0,0,'a9')
@@ -35,24 +36,30 @@ except ImportError:
 _global_handlers = {}
 
 class _Handler:
-    __slots__ = ('func', 'awaitable', 'cmdhandler', 'ircv3')
+    __slots__ = ('func', 'awaitable', 'signature')
 
-    def __init__(self, func, *, cmdhandler, ircv3):
+    def __init__(self, func):
         self.func = func
         self.awaitable = asyncio.iscoroutinefunction(func)
-        self.cmdhandler = cmdhandler
-        self.ircv3 = ircv3
+        self.signature = inspect.signature(func)
 
-def _add_handler(handlers, events, ircv3, cmdhandler, colon):
-    if colon:
-        raise TypeError('The usage of colon=True is no longer supported')
+        possible_params = {'irc', 'command', 'hostmask', 'tags', 'args'}
+
+        # throw error if signature does not match expected parameters
+        params = list(self.signature.parameters.values())
+        for param in params:
+            if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
+                raise TypeError('Handler parameters cannot be *args or **kwargs.')
+            if param.name not in possible_params:
+                raise TypeError(f'Invalid handler parameter: {param.name}')
+
+
+def _add_handler(handlers, events):
     if not events:
-        if not cmdhandler:
-            raise TypeError('Handler() called without arguments.')
-        events = (None,)
+        raise TypeError('Handler() called without arguments.')
 
     def add_handler(func):
-        handler = _Handler(func, cmdhandler=cmdhandler, ircv3=ircv3)
+        handler = _Handler(func)
         for event in events:
             if event is not None:
                 event = str(event).upper()
@@ -60,16 +67,16 @@ def _add_handler(handlers, events, ircv3, cmdhandler, colon):
                 handlers[event] = []
             if handler not in handlers[event]:
                 handlers[event].append(handler)
-
         return func
 
     return add_handler
 
-def Handler(*events, ircv3=False, colon=False):
-    return _add_handler(_global_handlers, events, ircv3, False, colon)
+def Handler(*events):
+    return _add_handler(_global_handlers, events)
 
-def CmdHandler(*events, ircv3=False, colon=False):
-    return _add_handler(_global_handlers, events, ircv3, True, colon)
+def CmdHandler(*events):
+    warnings.warn('CmdHandler is deprecated, use Handler instead', DeprecationWarning)
+    return Handler(*events)
 
 # Parse IRCv3 tags
 _ircv3_tag_escapes = {':': ';', 's': ' ', 'r': '\r', 'n': '\n'}
@@ -320,11 +327,12 @@ class IRC:
         await self.ctcp(target, 'ACTION', *msg, tags=tags)
 
     # Allow per-connection handlers
-    def Handler(self, *events, ircv3=False, colon=False):
-        return _add_handler(self._handlers, events, ircv3, False, colon)
+    def Handler(self, *events):
+        return _add_handler(self._handlers, events)
 
-    def CmdHandler(self, *events, ircv3=False, colon=False):
-        return _add_handler(self._handlers, events, ircv3, True, colon)
+    def CmdHandler(self, *events):
+        warnings.warn('CmdHandler is deprecated, use Handler instead', DeprecationWarning)
+        return self.Handler(*events)
 
     # The connect function
     async def connect(self, *, loop=None):
@@ -396,17 +404,23 @@ class IRC:
     # Start a handler function
     async def _start_handler(self, handlers, msg):
         for handler in handlers:
-            params = [self, msg.hostmask, list(msg.args)]
-            if handler.ircv3:
-                params.insert(2, types.MappingProxyType(msg.tags))
-            if handler.cmdhandler:
-                params.insert(1, msg.command)
+            kwargs = {}
+            if 'irc' in handler.signature.parameters:
+                kwargs['irc'] = self
+            if 'hostmask' in handler.signature.parameters:
+                kwargs['hostmask'] = msg.hostmask
+            if 'command' in handler.signature.parameters:
+                kwargs['command'] = msg.command
+            if 'tags' in handler.signature.parameters:
+                kwargs['tags'] = types.MappingProxyType(msg.tags)
+            if 'args' in handler.signature.parameters:
+                kwargs['args'] = list(msg.args)
 
             if handler.awaitable:
-                await handler.func(*params)
+                await handler.func(**kwargs)
             else:
                 # Run non-async handlers in the event loop's default executor
-                await self._loop.run_in_executor(None, handler.func, *params)
+                await self._loop.run_in_executor(None, handler.func, **kwargs)
 
     # Launch handlers
     async def handle_msg(self, msg):
@@ -421,7 +435,7 @@ class IRC:
 
         return handled
 
-    # Launch IRCv3 handlers
+    # Launch IRCv3 CAP acknowledgement handlers
     async def _handle_cap(self, cap):
         cap = cap.lower()
         self.active_caps.add(cap)
@@ -532,7 +546,7 @@ class IRC:
 
 # Handle some IRC messages by default.
 @Handler('001')
-async def _handler(irc, hostmask, args):
+async def _handler(irc, args):
     irc.connected = True
     irc.isupport.clear()
     irc._unhandled_caps = None
@@ -553,16 +567,16 @@ async def _handler(irc, hostmask, args):
             await irc.quote(*args, tags=tags)
 
 @Handler('PING')
-async def _handler(irc, hostmask, args):
+async def _handler(irc, args):
     await irc.send('PONG', *args, force=True)
 
 @Handler('PONG')
-async def _handler(irc, hostmask, args):
+async def _handler(irc, args):
     if args and args[-1] == 'miniirc-ping' and irc.ping_interval:
         irc._pinged = False
 
 @Handler('432', '433')
-async def _handler(irc, hostmask, args):
+async def _handler(irc):
     if not irc.connected:
         try:
             return int(irc.nick[0])
@@ -581,7 +595,7 @@ async def _handler(irc, hostmask, args):
     if hostmask[0].lower() == irc.current_nick.lower():
         irc.current_nick = args[-1]
 
-@Handler('PRIVMSG', 'NOTICE', ircv3=True)
+@Handler('PRIVMSG', 'NOTICE')
 async def _handler(irc, hostmask, tags, args):
     if not args:
         return
@@ -603,7 +617,7 @@ async def _handler(irc, hostmask, tags, args):
         await irc.handle_msg(ctcp_msg)
 
 @Handler('CTCP VERSION')
-async def _handler(irc, hostmask, args):
+async def _handler(irc, hostmask):
     if not version:
         return
     await irc.ctcp(hostmask[0], 'VERSION', version, reply=True)
@@ -621,18 +635,18 @@ async def _handler(irc, hostmask, args):
     await irc.handle_msg(msg)
 
 @Handler('CAP ACK')
-async def _handler(irc, hostmask, args):
+async def _handler(irc, args):
     caps = args[-1].split(' ')
     for cap in caps:
         await irc._handle_cap(cap)
 
 @Handler('CAP NAK')
-async def _handler(irc, hostmask, args):
+async def _handler(irc):
     irc._unhandled_caps = None
     await irc.quote('CAP END', force=True)
 
-@CmdHandler('CAP LS', 'CAP NEW')
-async def _handler(irc, command, hostmask, args):
+@Handler('CAP LS', 'CAP NEW')
+async def _handler(irc, command, args):
     req = set()
     
     if not irc._unhandled_caps:
@@ -660,7 +674,9 @@ async def _handler(irc, command, hostmask, args):
         await irc.quote('CAP END', force=True)
 
 @Handler('CAP DEL')
-async def _handler(irc, hostmask, caps):
+async def _handler(irc, args):
+    caps = args[-1].split(' ')
+
     for cap in caps:
         cap = cap.lower()
         if cap in irc.active_caps:
@@ -668,7 +684,7 @@ async def _handler(irc, hostmask, caps):
 
 # SASL
 @Handler('CAP ACK SASL')
-async def _handler(irc, hostmask, args):
+async def _handler(irc, args):
     if irc.ns_identity and (len(args) < 2 or 'PLAIN' in
             args[-1].upper().split(',')):
         await irc.quote('AUTHENTICATE PLAIN', force=True)
@@ -677,7 +693,7 @@ async def _handler(irc, hostmask, args):
         await irc.finish_negotiation('sasl')
 
 @Handler('AUTHENTICATE')
-async def _handler(irc, hostmask, args):
+async def _handler(irc, args):
     if args and args[0] == '+':
         from base64 import b64encode
         irc._sasl = True
@@ -685,18 +701,18 @@ async def _handler(irc, hostmask, args):
         await irc.quote('AUTHENTICATE', b64encode(pw).decode('utf-8'), force=True)
 
 @Handler('904', '905')
-async def _handler(irc, hostmask, args):
+async def _handler(irc):
     if irc._sasl:
         irc._sasl = False
         await irc.quote('AUTHENTICATE *', force=True)
 
 @Handler('902', '903', '904', '905')
-async def _handler(irc, hostmask, args):
+async def _handler(irc):
     await irc.finish_negotiation('sasl')
 
 # STS
 @Handler('CAP ACK STS')
-async def _handler(irc, hostmask, args):
+async def _handler(irc, args):
     if not irc.ssl and len(args) == 2:
         try:
             port = int(_tag_list_to_dict(args[1].split(','))['port'])
@@ -717,7 +733,7 @@ async def _handler(irc, hostmask, args):
 
 # Handle ISUPPORT messages
 @Handler('005')
-async def _handler(irc, hostmask, args):
+async def _handler(irc, args):
     isupport = _tag_list_to_dict(args[1:-1])
 
     # Try and auto-detect integers
