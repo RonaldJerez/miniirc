@@ -7,14 +7,15 @@ from collections.abc import Callable, Iterable
 from typing import Any, Optional, Union, overload, NamedTuple, Literal
 
 # The version string and tuple
-ver: tuple[int, int, int] = ...
+ver: tuple[int, int, int, str] = ...
 version: str = ...
+__version__: str = ...
 
 # __all__ and _default_caps
 __all__: list[str] = ['CmdHandler', 'Handler', 'IRC']
-_default_caps: set[str] = {'account-tag', 'cap-notify', 'chghost',
-    'draft/message-tags-0.2', 'invite-notify', 'message-tags',
-    'server-time', 'sts'}
+_default_caps: set[str] = {'account-notify', 'account-tag', 'away-notify',
+    'cap-notify', 'chghost', 'extended-join', 'invite-notify',
+    'message-tags', 'server-time', 'sts'}
 
 # Get the certificate list.
 get_ca_certs: Callable[[], Optional[str]]
@@ -44,12 +45,15 @@ def CmdHandler(*events: str, colon: bool = False,
 def CmdHandler(*events: str, colon: bool = False, ircv3: Literal[True]) \
     -> Callable[[_handler_func_4], _handler_func_4]: ...
 
-# Parse IRCv3 tags
+# Parse IRCv3 tags (renamed to match implementation)
 _ircv3_tag_escapes: dict[str, str] = {':': ';', 's': ' ', 'r': '\r', 'n': '\n'}
-def _tags_to_dict(tag_list: Union[str, list[str]],
-        separator: Optional[str] = ';') -> dict[str, Union[str, bool]]: ...
+def _tag_list_to_dict(tag_list: Iterable[str]) -> dict[str, str]: ...
 
 # Create the IRCv2/3 parser
+Hostmask = NamedTuple('Hostmask', [
+    ('nick', str),
+    ('user', str),
+    ('host', str) ])
 IRCMessage = NamedTuple('IRCMessage', [
     ('command', str),
     ('hostmask', tuple[str, str, str]),
@@ -91,19 +95,27 @@ class IRC:
     connect_modes: Optional[str]
     quit_message: str
     ping_interval: int
+    ping_timeout: Optional[int]
     verify_ssl: bool
     server_password: Optional[str]
 
-    ns_identity: Union[tuple[str, str], str]
+    ns_identity: Optional[Union[tuple[str, str], str]]
+
+    # Internal runtime attrs
+    _sendq: Optional[list[Any]]
+    _loop: Any
+    _task: Optional[Any]
+    _sasl: bool
+    _unhandled_caps: Optional[dict[str, Any]]
 
     # Debug print()
     def debug(self, *args: Any, **kwargs) -> None: ...
 
     # Send raw messages
-    async def quote(self, *msg: str, force: Optional[bool] = None,
+    async def quote(self, *msg: str, force: bool = False,
         tags: Optional[dict[str, Union[str, bool]]] = None) -> None: ...
 
-    async def send(self, *msg: str, force: Optional[bool] = None,
+    async def send(self, command: str, *args: str, force: bool = False,
         tags: Optional[dict[str, Union[str, bool]]] = None) -> None: ...
 
     # User-friendly msg, notice, and ctcp functions.
@@ -137,7 +149,7 @@ class IRC:
         -> Callable[[_handler_func_4], _handler_func_4]: ...
 
     # The connect function
-    async def connect(self) -> None: ...
+    async def connect(self, *, loop: Optional[Any] = None) -> None: ...
 
     # An easier way to disconnect
     async def disconnect(self, msg: Optional[str] = None, *,
@@ -148,8 +160,7 @@ class IRC:
 
     # Change the message parser
     def change_parser(self, parser: Callable[[str],
-        tuple[str, tuple[str, str, str], dict[str, Union[str, bool]],
-        list[str]]] = ircv3_message_parser) -> None: ...
+        IRCMessage] = ircv3_message_parser) -> None: ...
 
     # Initialize the class
     def __init__(self, ip: str, port: int, nick: str,
@@ -165,5 +176,9 @@ class IRC:
         connect_modes: Optional[str] = None,
         quit_message: str = 'I grew sick and died.', 
         ping_interval: int = 60,
+        ping_timeout: Optional[int] = None,
         verify_ssl: bool = True, 
-        server_password: Optional[str] = None) -> None: ...
+        server_password: Optional[str] = None,
+        loop: Optional[Any] = None) -> None: ...
+
+    async def wait_until_disconnected(self) -> None: ...

@@ -5,18 +5,17 @@ import miniirc
 import pathlib
 import pytest
 import re
-from miniirc import IRCMessage
+from miniirc import IRCMessage, Hostmask
 
 def fill_in_hostmask(hostmask):
-    while len(hostmask) < 3:
-        hostmask += ('',)
-    return hostmask[:3]
+    parts = list(hostmask) + [''] * (3 - len(hostmask))
+    return Hostmask(*parts[:3])
 
 def test_fill_in_hostmask():
-    assert fill_in_hostmask(()) == ('', '', '')
-    assert fill_in_hostmask(('B',)) == ('B', '', '')
-    assert fill_in_hostmask(('B', 'C')) == ('B', 'C', '')
-    assert fill_in_hostmask(('B', 'C', 'D')) == ('B', 'C', 'D')
+    assert fill_in_hostmask(()) == Hostmask('', '', '')
+    assert fill_in_hostmask(('B',)) == Hostmask('B', '', '')
+    assert fill_in_hostmask(('B', 'C')) == Hostmask('B', 'C', '')
+    assert fill_in_hostmask(('B', 'C', 'D')) == Hostmask('B', 'C', 'D')
 
 def test_message_parser():
     p = miniirc.ircv3_message_parser
@@ -282,13 +281,13 @@ async def test_handler_execution():
     async def handler3(irc, command, hostmask, tags, args):
         results.append(('handler3', command, hostmask, tags, args))
 
-    msg = IRCMessage('TEST', ('nick', 'user', 'host'), {'tag': 'value'}, ['arg1', 'arg2'])
+    msg = IRCMessage('TEST', Hostmask('nick', 'user', 'host'), {'tag': 'value'}, ['arg1', 'arg2'])
     await irc.handle_msg(msg)
 
     assert results == [
         ('handler1', ['arg1', 'arg2']),
         ('handler2', 'TEST', ['arg1', 'arg2']),
-        ('handler3', 'TEST', ('nick', 'user', 'host'), {'tag': 'value'}, ['arg1', 'arg2'])
+        ('handler3', 'TEST', Hostmask('nick', 'user', 'host'), {'tag': 'value'}, ['arg1', 'arg2'])
     ]
 
 if __name__ == '__main__':

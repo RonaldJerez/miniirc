@@ -105,6 +105,7 @@ def _tag_list_to_dict(tag_list):
     return tags
 
 # Create the IRCv2/3 parser
+Hostmask = collections.namedtuple('Hostmask', 'nick user host')
 IRCMessage = collections.namedtuple('IRCMessage', 'command hostmask tags args')
 _msg_re = re.compile(
     r'^'
@@ -123,8 +124,8 @@ def ircv3_message_parser(msg):
     tags = {} if raw_tags is None else _tag_list_to_dict(raw_tags.split(';'))
 
     # Process arguments
-    hostmask = (match.group(2) or '', match.group(3) or '',
-                match.group(4) or '')
+    hostmask = Hostmask(match.group(2) or '', match.group(3) or '',
+                        match.group(4) or '')
     cmd = match.group(5)
 
     # Get the command and arguments
@@ -441,7 +442,7 @@ class IRC:
         self.active_caps.add(cap)
         if self._unhandled_caps and cap in self._unhandled_caps:
             handled = await self.handle_msg(IRCMessage(
-                ('CAP ACK ' + cap).upper(), ('', '', ''), {},
+                ('CAP ACK ' + cap).upper(), Hostmask('', '', ''), {},
                 self._unhandled_caps[cap]
             ))
             if not handled:
