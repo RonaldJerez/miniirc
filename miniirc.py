@@ -426,6 +426,35 @@ class IRC:
 
     # Launch handlers
     async def handle_msg(self, msg):
+        # Handle CTCP embedded in PRIVMSG/NOTICE internally:
+        # if the last argument is a CTCP (starts and ends with \x01 and length>2),
+        # construct a "CTCP {COMMAND}" message and dispatch that instead of
+        # the original PRIVMSG/NOTICE.
+        if msg.command in ('PRIVMSG', 'NOTICE') and msg.args:
+            text = msg.args[-1]
+            if isinstance(text, str) and len(text) > 2 and text.startswith('\x01') and text.endswith('\x01'):
+                ctcp_content = text[1:-1]
+                ctcp_parts = ctcp_content.split(' ', 1)
+                ctcp_command = 'CTCP ' + ctcp_parts[0].upper()
+
+                ctcp_args = list(msg.args[:-1])
+                if len(ctcp_parts) > 1:
+                    ctcp_args.append(ctcp_parts[1])
+
+                ctcp_msg = IRCMessage(ctcp_command, msg.hostmask, msg.tags, ctcp_args)
+
+                handled = False
+                for handlers in (_global_handlers, self._handlers):
+                    if ctcp_msg.command in handlers:
+                        await self._start_handler(handlers[ctcp_msg.command], ctcp_msg)
+                        handled = True
+
+                    if None in handlers:
+                        await self._start_handler(handlers[None], ctcp_msg)
+
+                return handled
+
+        # If it was not a CTCP command, then process the message normally
         handled = False
         for handlers in (_global_handlers, self._handlers):
             if msg.command in handlers:
@@ -547,6 +576,8 @@ class IRC:
                 pass
 
 # Handle some IRC messages by default.
+
+# 001 = RPL_WELCOME
 @Handler('001')
 async def _handler(irc, args):
     irc.connected = True
@@ -577,6 +608,8 @@ async def _handler(irc, args):
     if args and args[-1] == 'miniirc-ping' and irc.ping_interval:
         irc._pinged = False
 
+# 432 = Erroneous Nickname
+# 433 = Nickname in use
 @Handler('432', '433')
 async def _handler(irc):
     if not irc.connected:
@@ -597,34 +630,12 @@ async def _handler(irc, hostmask, args):
     if hostmask[0].lower() == irc.current_nick.lower():
         irc.current_nick = args[-1]
 
-@Handler('PRIVMSG', 'NOTICE')
-async def _handler(irc, hostmask, tags, args):
-    if not args:
-        return
-
-    text = args[-1]
-    if text.startswith('\x01') and text.endswith('\x01') and len(text) > 2:
-        # Extract CTCP command and args
-        ctcp_content = text[1:-1]
-        ctcp_parts = ctcp_content.split(' ', 1)
-        ctcp_command = 'CTCP ' + ctcp_parts[0].upper()
-
-        # Create new args with CTCP content
-        ctcp_args = list(args[:-1])
-        if len(ctcp_parts) > 1:
-            ctcp_args.append(ctcp_parts[1])
-
-        # Create a modified message for CTCP handlers
-        ctcp_msg = IRCMessage(ctcp_command, hostmask, tags, ctcp_args)
-        await irc.handle_msg(ctcp_msg)
-
 @Handler('CTCP VERSION')
 async def _handler(irc, hostmask):
     if not version:
         return
     await irc.ctcp(hostmask[0], 'VERSION', version, reply=True)
 
-# Handle IRCv3 capabilities
 @Handler('CAP')
 async def _handler(irc, hostmask, args):
     if len(args) < 3:
@@ -684,7 +695,6 @@ async def _handler(irc, args):
         if cap in irc.active_caps:
             irc.active_caps.remove(cap)
 
-# SASL
 @Handler('CAP ACK SASL')
 async def _handler(irc, args):
     if irc.ns_identity and (len(args) < 2 or 'PLAIN' in
@@ -702,12 +712,18 @@ async def _handler(irc, args):
         pw = '{0}\x00{0}\x00{1}'.format(*irc.ns_identity).encode('utf-8')
         await irc.quote('AUTHENTICATE', b64encode(pw).decode('utf-8'), force=True)
 
+# 904 = SASL failed
+# 905 = SASL aborted
 @Handler('904', '905')
 async def _handler(irc):
     if irc._sasl:
         irc._sasl = False
         await irc.quote('AUTHENTICATE *', force=True)
 
+# 902 = SASL successful
+# 903 = SASL successful
+# 904 = SASL failed
+# 905 = SASL aborted
 @Handler('902', '903', '904', '905')
 async def _handler(irc):
     await irc.finish_negotiation('sasl')
@@ -733,7 +749,7 @@ async def _handler(irc, args):
     else:
         await irc.finish_negotiation('sts')
 
-# Handle ISUPPORT messages
+# 005 = ISUPPORT
 @Handler('005')
 async def _handler(irc, args):
     isupport = _tag_list_to_dict(args[1:-1])
