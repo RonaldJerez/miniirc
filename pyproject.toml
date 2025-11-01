@@ -1,0 +1,22 @@
+[project]
+name = "miniirc"
+version = "2.0.0a9"
+description = "A lightweight IRC framework."
+readme = "README.md"
+requires-python = ">=3.13"
+license = "MIT"
+license-files = ["LICENSE.md"]
+dependencies = []
+
+[project.optional-dependencies]
+ssl = [
+    "certifi>=2025.10.5",
+]
+
+[dependency-groups]
+dev = [
+    "coverage>=7.11.0",
+    "mypy>=1.18.2",
+    "pytest>=8.4.2",
+    "pytest-asyncio>=1.2.0",
+]

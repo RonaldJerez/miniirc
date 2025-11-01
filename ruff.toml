@@ -1,0 +1,8 @@
+ignore=['E401', 'E402']
+line-length = 120
+indent-width = 4
+
+[format]
+preview = true
+quote-style = 'single'
+indent-style = 'space'

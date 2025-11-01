@@ -62,9 +62,6 @@ target/
 .mypy_cache/
 
 # UV Related
-.python-version
-pyproject.toml
-uv.lock
 .venv
 
 # Others
