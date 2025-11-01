@@ -54,6 +54,32 @@ class _Handler:
                 raise TypeError(f'Invalid handler parameter: {param.name}')
 
 
+# Included numerics that are used internally to keep library lightweight
+_IRC_NUMERICS = {
+    'RPL_WELCOME': '001',
+    'RPL_ISUPPORT': '005',
+    'ERR_ERRONEUSNICKNAME': '432',
+    'ERR_NICKNAMEINUSE': '433',
+    'ERR_NICKLOCKED': '902',
+    'RPL_SASLSUCCESS': '903',
+    'ERR_SASLFAIL': '904',
+    'ERR_SASLABORTED': '905'
+}
+
+# Allow consumers to register additional numeric mappings
+def register_numerics(numerics):
+    """
+    Register additional IRC numeric replies.
+    """
+    _IRC_NUMERICS.update(numerics)
+
+def _event_name_to_numeric(event):
+    """Convert event name to its numeric value if applicable"""
+    if event is None:
+        return None
+    event = str(event).upper()
+    return _IRC_NUMERICS.get(event, event)
+
 def _add_handler(handlers, events):
     if not events:
         raise TypeError('Handler() called without arguments.')
@@ -61,8 +87,7 @@ def _add_handler(handlers, events):
     def add_handler(func):
         handler = _Handler(func)
         for event in events:
-            if event is not None:
-                event = str(event).upper()
+            event = _event_name_to_numeric(event)
             if event not in handlers:
                 handlers[event] = []
             if handler not in handlers[event]:
@@ -576,9 +601,7 @@ class IRC:
                 pass
 
 # Handle some IRC messages by default.
-
-# 001 = RPL_WELCOME
-@Handler('001')
+@Handler('RPL_WELCOME')
 async def _handler(irc, args):
     irc.connected = True
     irc.isupport.clear()
@@ -608,9 +631,7 @@ async def _handler(irc, args):
     if args and args[-1] == 'miniirc-ping' and irc.ping_interval:
         irc._pinged = False
 
-# 432 = Erroneous Nickname
-# 433 = Nickname in use
-@Handler('432', '433')
+@Handler('ERR_ERRONEUSNICKNAME', 'ERR_NICKNAMEINUSE')
 async def _handler(irc):
     if not irc.connected:
         try:
@@ -712,19 +733,13 @@ async def _handler(irc, args):
         pw = '{0}\x00{0}\x00{1}'.format(*irc.ns_identity).encode('utf-8')
         await irc.quote('AUTHENTICATE', b64encode(pw).decode('utf-8'), force=True)
 
-# 904 = SASL failed
-# 905 = SASL aborted
-@Handler('904', '905')
+@Handler('ERR_SASLFAIL', 'ERR_SASLABORTED')
 async def _handler(irc):
     if irc._sasl:
         irc._sasl = False
         await irc.quote('AUTHENTICATE *', force=True)
 
-# 902 = SASL successful
-# 903 = SASL successful
-# 904 = SASL failed
-# 905 = SASL aborted
-@Handler('902', '903', '904', '905')
+@Handler('ERR_NICKLOCKED', 'RPL_SASLSUCCESS', 'ERR_SASLFAIL', 'ERR_SASLABORTED')
 async def _handler(irc):
     await irc.finish_negotiation('sasl')
 
@@ -749,8 +764,7 @@ async def _handler(irc, args):
     else:
         await irc.finish_negotiation('sts')
 
-# 005 = ISUPPORT
-@Handler('005')
+@Handler('RPL_ISUPPORT')
 async def _handler(irc, args):
     isupport = _tag_list_to_dict(args[1:-1])
 
