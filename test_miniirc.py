@@ -36,7 +36,7 @@ def test_message_parser():
 def verify_handler(event):
     handler = miniirc._global_handlers[event][-1]
     assert handler.awaitable
-    assert hasattr(handler, 'signature')
+    assert hasattr(handler, 'params')
 
 def test_Handler(monkeypatch):
     try:
@@ -199,7 +199,7 @@ async def test_connection():
         assert irc.connected is None
 
         @irc.Handler('001')
-        async def _handle_001(args):
+        async def _handle_001(irc, args):
             assert args == ['miniirc-test_', 'parameter', 'test', 'with colon']
 
         state = {'count': 0}
@@ -233,24 +233,24 @@ def test_handler_signatures():
         @miniirc.Handler('TEST1')
         async def handler1(irc, args): ...
         handler = miniirc._global_handlers['TEST1'][-1]
-        assert len(handler.signature.parameters) == 2
+        assert len(handler.params) == 1
         
         # Test handler with command parameter
         @miniirc.Handler('TEST2')
-        async def handler2(command, tags): ...
+        async def handler2(irc, command, tags): ...
         handler = miniirc._global_handlers['TEST2'][-1]
-        assert len(handler.signature.parameters) == 2
+        assert len(handler.params) == 2
 
         # Test handler with all parameters
         @miniirc.Handler('TEST3')
         async def handler4(irc, command, hostmask, tags, args): ...
         handler = miniirc._global_handlers['TEST3'][-1]
-        assert len(handler.signature.parameters) == 5
+        assert len(handler.params) == 4
 
         # Test wrong handler (invalid test2 parameter)
         with pytest.raises(TypeError):
             @miniirc.Handler('TEST4')
-            async def handler_wrong(command, args, test2): ...
+            async def handler_wrong(irc, command, args, test2): ...
         
         # Test wrong parameters *args, **kwargs
         with pytest.raises(TypeError):

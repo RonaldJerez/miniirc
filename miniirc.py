@@ -32,28 +32,6 @@ except ImportError:
     def get_ca_certs():
         pass
 
-# Create global handlers
-_global_handlers = {}
-
-class _Handler:
-    __slots__ = ('func', 'awaitable', 'signature')
-
-    def __init__(self, func):
-        self.func = func
-        self.awaitable = asyncio.iscoroutinefunction(func)
-        self.signature = inspect.signature(func)
-
-        possible_params = {'irc', 'command', 'hostmask', 'tags', 'args'}
-
-        # throw error if signature does not match expected parameters
-        params = list(self.signature.parameters.values())
-        for param in params:
-            if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
-                raise TypeError('Handler parameters cannot be *args or **kwargs.')
-            if param.name not in possible_params:
-                raise TypeError(f'Invalid handler parameter: {param.name}')
-
-
 # Included numerics that are used internally to keep library lightweight
 _IRC_NUMERICS = {
     'RPL_WELCOME': '001',
@@ -79,6 +57,33 @@ def _event_name_to_numeric(event):
         return None
     event = str(event).upper()
     return _IRC_NUMERICS.get(event, event)
+
+# Create global handlers
+_global_handlers = {}
+
+class _Handler:
+    __slots__ = ('func', 'awaitable', 'params')
+
+    def __init__(self, func):
+        self.func = func
+        self.awaitable = asyncio.iscoroutinefunction(func)
+
+        signature = inspect.signature(func)
+        params = list(signature.parameters.values())
+        possible_params = {'command', 'hostmask', 'tags', 'args'}
+
+        if not params:
+            raise TypeError('Handler must have at least one parameter')
+
+        # Store parameter names excluding first parameter which is assume to be 'self' or 'irc'
+        self.params = list(signature.parameters.keys())[1:]
+
+        # throw error if signature does not match expected parameters
+        for param in params[1:]:
+            if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
+                raise TypeError('Handler parameters cannot be *args or **kwargs.')
+            if param.name not in possible_params:
+                raise TypeError(f'Invalid handler parameter: {param.name}')
 
 def _add_handler(handlers, events):
     if not events:
@@ -432,22 +437,24 @@ class IRC:
     async def _start_handler(self, handlers, msg):
         for handler in handlers:
             kwargs = {}
-            if 'irc' in handler.signature.parameters:
-                kwargs['irc'] = self
-            if 'hostmask' in handler.signature.parameters:
-                kwargs['hostmask'] = msg.hostmask
-            if 'command' in handler.signature.parameters:
-                kwargs['command'] = msg.command
-            if 'tags' in handler.signature.parameters:
-                kwargs['tags'] = types.MappingProxyType(msg.tags)
-            if 'args' in handler.signature.parameters:
-                kwargs['args'] = list(msg.args)
+
+            for param in handler.params:
+                if param == 'hostmask':
+                    kwargs['hostmask'] = msg.hostmask
+                elif param == 'command':
+                    kwargs['command'] = msg.command
+                elif param == 'tags':
+                    kwargs['tags'] = types.MappingProxyType(msg.tags)
+                elif param == 'args':
+                    kwargs['args'] = list(msg.args)
 
             if handler.awaitable:
-                await handler.func(**kwargs)
+                await handler.func(self, **kwargs)
             else:
                 # Run non-async handlers in the event loop's default executor
-                await self._loop.run_in_executor(None, handler.func, **kwargs)
+                await self._loop.run_in_executor(None, handler.func, self, **kwargs)
+                # TODO : Use functools.partial to avoid issues with arguments, write test cases
+                #await self._loop.run_in_executor(None, functools.partial(handler.func, self, **kwargs))
 
     # Launch handlers
     async def handle_msg(self, msg):

@@ -5,6 +5,7 @@
 import io
 from collections.abc import Callable, Iterable
 from typing import Any, Optional, Union, overload, NamedTuple, Literal
+from asyncio import AbstractEventLoop
 
 # The version string and tuple
 ver: tuple[int, int, int, str] = ...
@@ -107,7 +108,7 @@ class IRC:
 
     # Internal runtime attrs
     _sendq: Optional[list[Any]]
-    _loop: Any
+    _loop: AbstractEventLoop
     _task: Optional[Any]
     _sasl: bool
     _unhandled_caps: Optional[dict[str, Any]]
@@ -121,7 +122,7 @@ class IRC:
 
     async def send(self, command: str, *args: str, force: bool = False,
         tags: Optional[dict[str, Union[str, bool]]] = None) -> None: ...
-
+        
     # User-friendly msg, notice, and ctcp functions.
     async def msg(self, target: str, *msg: str,
         tags: Optional[dict[str, Union[str, bool]]] = None) -> None: ...
