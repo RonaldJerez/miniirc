@@ -8,6 +8,11 @@ license = "MIT"
 license-files = ["LICENSE.md"]
 dependencies = []
 
+[tool.taskipy.tasks]
+test = "pytest -v tests/"
+cov = "coverage run -m pytest -q && coverage report"
+cov-server = "coverage run -m pytest -q && python -m http.server 7777 -d ./htmlcov"
+
 [project.optional-dependencies]
 ssl = [
     "certifi>=2025.10.5",
@@ -16,7 +21,17 @@ ssl = [
 [dependency-groups]
 dev = [
     "coverage>=7.11.0",
+    "miniirc",
     "mypy>=1.18.2",
     "pytest>=8.4.2",
     "pytest-asyncio>=1.2.0",
+    "taskipy>=1.14.1",
 ]
+
+[tool.uv.workspace]
+members = [
+    ".",
+]
+
+[tool.uv.sources]
+miniirc = { workspace = true, editable = true }

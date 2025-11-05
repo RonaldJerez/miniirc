@@ -67,3 +67,5 @@ target/
 # Others
 example_*
 .vscode
+!.vscode/extensions.json
+!.vscode/launch.json
