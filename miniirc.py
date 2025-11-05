@@ -215,11 +215,18 @@ def _prune_arg(arg):
         arg = ' '
     return arg.replace(' ', '\xa0').replace('\r', '\xa0').replace('\n', '\xa0')
 
-async def _suppress_oserror(coro):
-    try:
-        return await coro
-    except OSError:
-        pass
+# Creates a CTCP or similar subcommand message from a given message
+def subcommand_from_msg(prefix, msg):
+    target, text = msg.args
+
+    if text.startswith('\x01') and text.endswith('\x01'):
+        text = text[1:-1]
+
+    sub_command, *new_args = text.split(' ', 1)
+    new_command = f'{prefix} {sub_command.upper()}'
+
+    new_args.insert(0, target)
+    return IRCMessage(new_command, msg.hostmask, msg.tags, new_args)
 
 # Create the IRC class
 class IRC:
@@ -457,37 +464,17 @@ class IRC:
                 #await self._loop.run_in_executor(None, functools.partial(handler.func, self, **kwargs))
 
     # Launch handlers
-    async def handle_msg(self, msg):
-        # Handle CTCP embedded in PRIVMSG/NOTICE internally:
-        # if the last argument is a CTCP (starts and ends with \x01 and length>2),
-        # construct a "CTCP {COMMAND}" message and dispatch that instead of
-        # the original PRIVMSG/NOTICE.
-        if msg.command in ('PRIVMSG', 'NOTICE') and msg.args:
-            text = msg.args[-1]
-            if isinstance(text, str) and len(text) > 2 and text.startswith('\x01') and text.endswith('\x01'):
-                ctcp_content = text[1:-1]
-                ctcp_parts = ctcp_content.split(' ', 1)
-                ctcp_command = 'CTCP ' + ctcp_parts[0].upper()
-
-                ctcp_args = list(msg.args[:-1])
-                if len(ctcp_parts) > 1:
-                    ctcp_args.append(ctcp_parts[1])
-
-                ctcp_msg = IRCMessage(ctcp_command, msg.hostmask, msg.tags, ctcp_args)
-
-                handled = False
-                for handlers in (_global_handlers, self._handlers):
-                    if ctcp_msg.command in handlers:
-                        await self._start_handler(handlers[ctcp_msg.command], ctcp_msg)
-                        handled = True
-
-                    if None in handlers:
-                        await self._start_handler(handlers[None], ctcp_msg)
-
-                return handled
-
-        # If it was not a CTCP command, then process the message normally
+    async def handle_msg(self, input_msg):
+        ctcp_msg = None
         handled = False
+
+        if input_msg.command in ('PRIVMSG', 'NOTICE') and input_msg.args:
+            text = input_msg.args[-1]
+            if len(text) > 2 and text.startswith('\x01') and text.endswith('\x01'):
+                ctcp_msg = subcommand_from_msg('CTCP', input_msg)
+
+        msg = ctcp_msg or input_msg
+
         for handlers in (_global_handlers, self._handlers):
             if msg.command in handlers:
                 await self._start_handler(handlers[msg.command], msg)
