@@ -50,8 +50,8 @@ async def test_connection():
         assert irc.connected is None
 
         @irc.Handler('001')
-        async def _handle_001(irc, args):
-            assert args == ['miniirc-test_', 'parameter', 'test', 'with colon']
+        async def _handle_001(irc, msg):
+            assert msg.args == ['miniirc-test_', 'parameter', 'test', 'with colon']
 
         state = {'count': 0}
         

@@ -6,13 +6,12 @@
 #
 
 import asyncio
-import collections
 import re
 import ssl
 import sys
-import types
 import warnings
 import inspect
+from typing import NamedTuple
 
 # The version string and tuple
 ver = __version_info__ = (2,0,0,'a9')
@@ -62,28 +61,18 @@ def _event_name_to_numeric(event):
 _global_handlers = {}
 
 class _Handler:
-    __slots__ = ('func', 'awaitable', 'params')
+    __slots__ = ('func', 'awaitable', 'params_count')
 
     def __init__(self, func):
         self.func = func
         self.awaitable = asyncio.iscoroutinefunction(func)
 
         signature = inspect.signature(func)
-        params = list(signature.parameters.values())
-        possible_params = {'command', 'hostmask', 'tags', 'args'}
+        self.params_count = len(signature.parameters.keys())
 
-        if not params:
-            raise TypeError('Handler must have at least one parameter')
+        if self.params_count > 2:
+            raise TypeError(f'Handler only accepts 2 params, got {self.params_count}')
 
-        # Store parameter names excluding first parameter which is assume to be 'self' or 'irc'
-        self.params = list(signature.parameters.keys())[1:]
-
-        # throw error if signature does not match expected parameters
-        for param in params[1:]:
-            if param.kind in (param.VAR_POSITIONAL, param.VAR_KEYWORD):
-                raise TypeError('Handler parameters cannot be *args or **kwargs.')
-            if param.name not in possible_params:
-                raise TypeError(f'Invalid handler parameter: {param.name}')
 
 def _add_handler(handlers, events):
     if not events:
@@ -135,8 +124,34 @@ def _tag_list_to_dict(tag_list):
     return tags
 
 # Create the IRCv2/3 parser
-Hostmask = collections.namedtuple('Hostmask', 'nick user host')
-IRCMessage = collections.namedtuple('IRCMessage', 'command hostmask tags args')
+class Hostmask(NamedTuple):
+    nick: str = ''
+    user: str = ''
+    host: str = ''
+
+class IRCMessage(NamedTuple):
+    command: str
+    hostmask: Hostmask = Hostmask()
+    tags: dict | None = None
+    args: list | None = None
+
+    def sub_command(self, prefix):
+        """Creates a new message with sub-commands from the current message"""
+        target, text = self.args
+
+        if text.startswith('\x01') and text.endswith('\x01'):
+            text = text[1:-1]
+
+        if text == '':
+            return None
+
+        sub_command, *new_args = text.split(' ', 1)
+        new_command = f'{prefix} {sub_command}'
+
+        new_args.insert(0, target)
+        
+        return self._replace(command=new_command, args=new_args)
+
 _msg_re = re.compile(
     r'^'
     r'(?:@([^ ]*) )?'                               # Tags
@@ -154,8 +169,7 @@ def ircv3_message_parser(msg):
     tags = {} if raw_tags is None else _tag_list_to_dict(raw_tags.split(';'))
 
     # Process arguments
-    hostmask = Hostmask(match.group(2) or '', match.group(3) or '',
-                        match.group(4) or '')
+    hostmask = Hostmask(*match.groups('')[1:4])
     cmd = match.group(5)
 
     # Get the command and arguments
@@ -167,7 +181,7 @@ def ircv3_message_parser(msg):
         args.append(trailing)
 
     # Return the parsed data
-    return IRCMessage(cmd.upper(), hostmask, tags, args)
+    return IRCMessage(cmd, hostmask, tags, args)
 
 # Escape tags
 def _escape_tag(tag):
@@ -214,19 +228,6 @@ def _prune_arg(arg):
         # Replace the argument with something to prevent misinterpretation
         arg = ' '
     return arg.replace(' ', '\xa0').replace('\r', '\xa0').replace('\n', '\xa0')
-
-# Creates a CTCP or similar subcommand message from a given message
-def subcommand_from_msg(prefix, msg):
-    target, text = msg.args
-
-    if text.startswith('\x01') and text.endswith('\x01'):
-        text = text[1:-1]
-
-    sub_command, *new_args = text.split(' ', 1)
-    new_command = f'{prefix} {sub_command.upper()}'
-
-    new_args.insert(0, target)
-    return IRCMessage(new_command, msg.hostmask, msg.tags, new_args)
 
 # Create the IRC class
 class IRC:
@@ -443,41 +444,30 @@ class IRC:
     # Start a handler function
     async def _start_handler(self, handlers, msg):
         for handler in handlers:
-            kwargs = {}
-
-            for param in handler.params:
-                if param == 'hostmask':
-                    kwargs['hostmask'] = msg.hostmask
-                elif param == 'command':
-                    kwargs['command'] = msg.command
-                elif param == 'tags':
-                    kwargs['tags'] = types.MappingProxyType(msg.tags)
-                elif param == 'args':
-                    kwargs['args'] = list(msg.args)
-
+            params = (self, msg)
             if handler.awaitable:
-                await handler.func(self, **kwargs)
+                await handler.func(*params[:handler.params_count])
             else:
                 # Run non-async handlers in the event loop's default executor
-                await self._loop.run_in_executor(None, handler.func, self, **kwargs)
-                # TODO : Use functools.partial to avoid issues with arguments, write test cases
-                #await self._loop.run_in_executor(None, functools.partial(handler.func, self, **kwargs))
+                await self._loop.run_in_executor(None, handler.func, *params[:handler.params_count])
 
     # Launch handlers
     async def handle_msg(self, input_msg):
         ctcp_msg = None
         handled = False
+        input_command = input_msg.command.upper()
 
-        if input_msg.command in ('PRIVMSG', 'NOTICE') and input_msg.args:
+        if input_command in ('PRIVMSG', 'NOTICE') and input_msg.args:
             text = input_msg.args[-1]
             if len(text) > 2 and text.startswith('\x01') and text.endswith('\x01'):
-                ctcp_msg = subcommand_from_msg('CTCP', input_msg)
+                ctcp_msg = input_msg.sub_command('CTCP')
 
         msg = ctcp_msg or input_msg
+        msg_command = msg.command.upper()
 
         for handlers in (_global_handlers, self._handlers):
-            if msg.command in handlers:
-                await self._start_handler(handlers[msg.command], msg)
+            if msg_command in handlers:
+                await self._start_handler(handlers[msg_command], msg)
                 handled = True
 
             if None in handlers:
@@ -490,10 +480,8 @@ class IRC:
         cap = cap.lower()
         self.active_caps.add(cap)
         if self._unhandled_caps and cap in self._unhandled_caps:
-            handled = await self.handle_msg(IRCMessage(
-                ('CAP ACK ' + cap).upper(), Hostmask('', '', ''), {},
-                self._unhandled_caps[cap]
-            ))
+            msg = IRCMessage(f'CAP ACK {cap}', args=self._unhandled_caps[cap])
+            handled = await self.handle_msg(msg)
             if not handled:
                 await self.finish_negotiation(cap)
 
@@ -596,7 +584,7 @@ class IRC:
 
 # Handle some IRC messages by default.
 @Handler('RPL_WELCOME')
-async def _handler(irc, args):
+async def _handler(irc):
     irc.connected = True
     irc.isupport.clear()
     irc._unhandled_caps = None
@@ -617,12 +605,12 @@ async def _handler(irc, args):
             await irc.quote(*args, tags=tags)
 
 @Handler('PING')
-async def _handler(irc, args):
-    await irc.send('PONG', *args, force=True)
+async def _handler(irc, msg):
+    await irc.send('PONG', *msg.args, force=True)
 
 @Handler('PONG')
-async def _handler(irc, args):
-    if args and args[-1] == 'miniirc-ping' and irc.ping_interval:
+async def _handler(irc, msg):
+    if msg.args and msg.args[-1] == 'miniirc-ping' and irc.ping_interval:
         irc._pinged = False
 
 @Handler('ERR_ERRONEUSNICKNAME', 'ERR_NICKNAMEINUSE')
@@ -641,30 +629,27 @@ async def _handler(irc):
         await irc.quote('NICK', irc.current_nick, force=True)
 
 @Handler('NICK')
-async def _handler(irc, hostmask, args):
-    if hostmask[0].lower() == irc.current_nick.lower():
-        irc.current_nick = args[-1]
+async def _handler(irc, msg):
+    if msg.hostmask.nick.lower() == irc.current_nick.lower():
+        irc.current_nick = msg.args[-1]
 
 @Handler('CTCP VERSION')
-async def _handler(irc, hostmask):
+async def _handler(irc, msg):
     if not version:
         return
-    await irc.ctcp(hostmask[0], 'VERSION', version, reply=True)
+    await irc.ctcp(msg.hostmask.nick, 'VERSION', version, reply=True)
 
 @Handler('CAP')
-async def _handler(irc, hostmask, args):
-    if len(args) < 3:
+async def _handler(irc, msg):
+    if len(msg.args) < 3:
         return
-    
-    cmd = args[1].upper()
-    # caps = args[-1].split(' ')
 
-    msg = IRCMessage('CAP ' + cmd, hostmask, {}, args)
+    msg = IRCMessage(f'CAP {msg.args[1]}', msg.hostmask, args=msg.args)
     await irc.handle_msg(msg)
 
 @Handler('CAP ACK')
-async def _handler(irc, args):
-    caps = args[-1].split(' ')
+async def _handler(irc, msg):
+    caps = msg.args[-1].split(' ')
     for cap in caps:
         await irc._handle_cap(cap)
 
@@ -674,14 +659,14 @@ async def _handler(irc):
     await irc.quote('CAP END', force=True)
 
 @Handler('CAP LS', 'CAP NEW')
-async def _handler(irc, command, args):
+async def _handler(irc, msg):
     req = set()
     
     if not irc._unhandled_caps:
         irc._unhandled_caps = {}
 
-    caps = args[-1].split(' ')
-    multiline = args[2] == '*'
+    caps = msg.args[-1].split(' ')
+    multiline = msg.args[2] == '*'
 
     for raw in caps:
         raw = raw.split('=', 1)
@@ -697,13 +682,13 @@ async def _handler(irc, command, args):
         return
     elif req:
         await irc.quote('CAP REQ', ':' + ' '.join(req), force=True)
-    elif command == 'CAP LS' and not irc._unhandled_caps and not multiline:
+    elif msg.command == 'CAP LS' and not irc._unhandled_caps and not multiline:
         irc._unhandled_caps = None
         await irc.quote('CAP END', force=True)
 
 @Handler('CAP DEL')
-async def _handler(irc, args):
-    caps = args[-1].split(' ')
+async def _handler(irc, msg):
+    caps = msg.args[-1].split(' ')
 
     for cap in caps:
         cap = cap.lower()
@@ -711,17 +696,17 @@ async def _handler(irc, args):
             irc.active_caps.remove(cap)
 
 @Handler('CAP ACK SASL')
-async def _handler(irc, args):
-    if irc.ns_identity and (len(args) < 2 or 'PLAIN' in
-            args[-1].upper().split(',')):
+async def _handler(irc, msg):
+    if irc.ns_identity and (len(msg.args) < 2 or 'PLAIN' in
+            msg.args[-1].upper().split(',')):
         await irc.quote('AUTHENTICATE PLAIN', force=True)
     else:
         await irc.quote('AUTHENTICATE *', force=True)
         await irc.finish_negotiation('sasl')
 
 @Handler('AUTHENTICATE')
-async def _handler(irc, args):
-    if args and args[0] == '+':
+async def _handler(irc, msg):
+    if msg.args and msg.args[0] == '+':
         from base64 import b64encode
         irc._sasl = True
         pw = '{0}\x00{0}\x00{1}'.format(*irc.ns_identity).encode('utf-8')
@@ -739,10 +724,10 @@ async def _handler(irc):
 
 # STS
 @Handler('CAP ACK STS')
-async def _handler(irc, args):
-    if not irc.ssl and len(args) == 2:
+async def _handler(irc, msg):
+    if not irc.ssl and len(msg.args) == 2:
         try:
-            port = int(_tag_list_to_dict(args[1].split(','))['port'])
+            port = int(_tag_list_to_dict(msg.args[1].split(','))['port'])
         except (IndexError, KeyError, ValueError):
             return
 
@@ -759,8 +744,8 @@ async def _handler(irc, args):
         await irc.finish_negotiation('sts')
 
 @Handler('RPL_ISUPPORT')
-async def _handler(irc, args):
-    isupport = _tag_list_to_dict(args[1:-1])
+async def _handler(irc, msg):
+    isupport = _tag_list_to_dict(msg.args[1:-1])
 
     # Try and auto-detect integers
     remove = set()

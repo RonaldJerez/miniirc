@@ -5,29 +5,19 @@ import collections
 import pathlib
 from miniirc import IRCMessage, Hostmask
 
-def fill_in_hostmask(hostmask):
-    parts = list(hostmask) + [''] * (3 - len(hostmask))
-    return Hostmask(*parts[:3])
-
-def test_fill_in_hostmask():
-    assert fill_in_hostmask(()) == Hostmask('', '', '')
-    assert fill_in_hostmask(('B',)) == Hostmask('B', '', '')
-    assert fill_in_hostmask(('B', 'C')) == Hostmask('B', 'C', '')
-    assert fill_in_hostmask(('B', 'C', 'D')) == Hostmask('B', 'C', 'D')
-
+print(Hostmask('n', 'u', 'h'))
 def test_message_parser():
     p = miniirc.ircv3_message_parser
     for i in range(4):
-        hostmask = fill_in_hostmask(('n', 'u', 'h')[:i])
+        hostmask = Hostmask(*('n', 'u', 'h')[:i])
         hostmask_s = ':n!u@h'[:i * 2] + (' ' if i else '')
         assert (p(hostmask_s + 'PRIVMSG #channel :Hello world!') ==
-                IRCMessage('PRIVMSG', hostmask, {},
-                            ['#channel', 'Hello world!']))
+                IRCMessage('PRIVMSG', hostmask, {}, ['#channel', 'Hello world!']))
 
-    hostmask = fill_in_hostmask(())
+    hostmask = Hostmask()
     empty_tag = ''
     assert (p(r'@tag1=value\:\swith\s\\spaces\rand\nnewlines;tag2;tag3= Hi') ==
-            ('HI', hostmask,
+            ('Hi', hostmask,
              {'tag1': 'value; with \\spaces\rand\nnewlines', 'tag2': empty_tag,
               'tag3': empty_tag}, []))
 

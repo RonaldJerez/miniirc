@@ -65,7 +65,7 @@ target/
 .venv
 
 # Others
-example_*
+examples/
 .vscode
 !.vscode/extensions.json
 !.vscode/launch.json
