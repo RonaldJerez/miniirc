@@ -8,9 +8,9 @@
 import asyncio
 import re
 import ssl
-import sys
 import warnings
 import inspect
+import logging
 from typing import NamedTuple
 
 # The version string and tuple
@@ -232,7 +232,6 @@ def _prune_arg(arg):
 # Create the IRC class
 class IRC:
     connected = None
-    debug_file = sys.stdout
     _sendq = None
     msglen = 512
     _loop = None
@@ -240,7 +239,7 @@ class IRC:
     _unhandled_caps = None
 
     def __init__(self, ip, port, nick, channels=None, *, ssl=None, ident=None,
-                 realname=None, persist=True, debug=False, ns_identity=None,
+                 realname=None, persist=True, ns_identity=None,
                  auto_connect=True, ircv3_caps=None, connect_modes=None,
                  quit_message='I grew sick and died.', ping_interval=60,
                  ping_timeout=None, verify_ssl=True, server_password=None, loop=None):
@@ -277,14 +276,6 @@ class IRC:
         else:
             self.ns_identity = None
 
-        # Set the debug file
-        if not debug:
-            self.debug_file = None
-        elif hasattr(debug, 'write'):
-            self.debug_file = debug
-        elif callable(debug):
-            self.debug_file = _Logfile(debug)
-
         # Add IRCv3 capabilities.
         if self.ns_identity:
             self.ircv3_caps.add('sasl')
@@ -308,23 +299,17 @@ class IRC:
         elif loop is not None:
             raise TypeError('loop cannot be specified with auto_connect=False')
 
-    # Debug print()
-    def debug(self, *args, **kwargs):
-        if self.debug_file:
-            print(*args, file=self.debug_file, **kwargs)
-            if hasattr(self.debug_file, 'flush'):
-                self.debug_file.flush()
 
     # Send raw messages
     async def quote(self, *msg, force=False, tags=None):
         if not self.connected and not force:
-            self.debug('>Q>', *msg)
+            logging.debug(f'>Q> {msg}')
             if not self._sendq:
                 self._sendq = []
             self._sendq.append((tags, msg))
             return
 
-        self.debug('>>>', *msg)
+        logging.debug(f'>>> {msg}')
         msg = (' '.join(msg).replace('\x00', '\ufffd').encode('utf-8')
                .replace(b'\r', b' ') .replace(b'\n', b' '))
 
@@ -377,7 +362,7 @@ class IRC:
     # The connect function
     async def connect(self, *, loop=None):
         if self.connected is not None:
-            self.debug('Already connected!')
+            logging.debug('Already connected!')
             return
 
         if loop is None:
@@ -392,7 +377,7 @@ class IRC:
         self.connected = False
         self._unhandled_caps = None
         self.current_nick = self.nick
-        self.debug('Starting main loop...')
+        logging.debug('Starting main loop...')
         self._sasl = self._pinged = False
         
         self._task = self._loop.create_task(self._async_main())
@@ -430,7 +415,7 @@ class IRC:
 
     # Finish capability negotiation
     async def finish_negotiation(self, cap):
-        self.debug('Capability', cap, 'handled.')
+        logging.debug(f'Capability {cap} handled')
         if self._unhandled_caps:
             cap = cap.lower()
             if cap in self._unhandled_caps:
@@ -511,7 +496,7 @@ class IRC:
         # Try to connect
         while True:
             try:
-                self.debug('Connecting to', self.ip, 'port', self.port)
+                logging.info(f'Connecting to {self.ip} on port: {self.port}')
                 self._reader, self._writer = await asyncio.wait_for(
                     asyncio.open_connection(self.ip, self.port, ssl=ctx),
                     timeout=self.ping_timeout or self.ping_interval,
@@ -526,10 +511,10 @@ class IRC:
                 if not self.persist:
                     raise
 
-                self.debug('Failed to connect, trying again in 5 seconds.')
+                logging.debug('Failed to connect, trying again in 5 seconds.')
                 await asyncio.sleep(5)
 
-        self.debug('Main loop running!')
+        logging.debug('Main loop running!')
         while True:
             try:
                 try:
@@ -551,25 +536,29 @@ class IRC:
                     raise ConnectionAbortedError
             except (asyncio.IncompleteReadError, asyncio.LimitOverrunError,
                     asyncio.TimeoutError, OSError) as exc:
-                self.debug('Lost connection!', repr(exc))
+                logging.debug('Lost connection!', exc_info=exc)
                 # TODO: add logic to only reconnect if he have a successful initial connection, for now disabled auto-reconnect
                 await self.disconnect(auto_reconnect=False)
 
                 if self.persist:
                     await asyncio.sleep(5)
-                    self.debug('Reconnecting...')
+                    logging.debug('Reconnecting...')
                     await self.connect()
                 return
 
             line_str = line.rstrip(b'\r\n').decode('utf-8', 'replace')
             if line_str:
-                self.debug('<<<', line_str)
+                if (hasattr(self, 'debug_line_filter')):
+                    self.debug_line_filter(line_str)
+                else:
+                    logging.debug(f'<<< {line_str}')
+                    
                 try:
                     msg = self._parse(line_str)
                     if isinstance(msg, IRCMessage):
                         await self.handle_msg(msg)
                     else:
-                        self.debug('Ignored message:', line_str)
+                        logging.debug(f'Ignored message: {line_str}')
                 except Exception:
                     import traceback
                     traceback.print_exc()
@@ -592,14 +581,14 @@ async def _handler(irc):
     irc.connected = True
     irc.isupport.clear()
     irc._unhandled_caps = None
-    irc.debug('Connected!')
+    logging.debug('Connected!')
     if irc.connect_modes:
         await irc.quote('MODE', irc.nick, irc.connect_modes)
     if not irc._sasl and irc.ns_identity:
-        irc.debug('Logging in (no SASL, aww)...')
+        logging.debug('Logging in (no SASL, aww)...')
         await irc.msg('NickServ', 'identify', *irc.ns_identity)
     if irc.channels:
-        irc.debug('*** Joining channels...', irc.channels)
+        logging.debug(f'*** Joining channels... {irc.channels}')
         await irc.quote('JOIN', ','.join(irc.channels))
 
     # Handle queued messages
@@ -626,9 +615,8 @@ async def _handler(irc):
             pass
         if len(irc.current_nick) >= irc.isupport.get('NICKLEN', 20):
             return
-        irc.debug('WARNING: The requested nickname', repr(irc.current_nick),
-            'is invalid. Trying again with', repr(irc.current_nick + '_') +
-            '...')
+        logging.warning(f'The requested nickname {irc.current_nick} is invalid.')
+        logging.warning(f'Trying again with {irc.current_nick + '_'}')
         irc.current_nick += '_'
         await irc.quote('NICK', irc.current_nick, force=True)
 
@@ -737,8 +725,7 @@ async def _handler(irc, msg):
 
         persist = irc.persist
         await irc.disconnect()
-        irc.debug('STS detected, enabling TLS/SSL and changing the port to ',
-                  port)
+        logging.debug(f'STS detected, enabling TLS/SSL and changing the port to {port}')
         irc.port = port
         irc.ssl = True
         await asyncio.sleep(1)

@@ -46,7 +46,7 @@ async def test_connection():
 
     try:
         irc = miniirc.IRC(ip, port, 'miniirc-test', auto_connect=False,
-            ns_identity=('test', 'hunter2'), persist=False, debug=True)
+            ns_identity=('test', 'hunter2'), persist=False)
         assert irc.connected is None
 
         @irc.Handler('001')
