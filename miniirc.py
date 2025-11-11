@@ -156,7 +156,7 @@ _msg_re = re.compile(
     r'^'
     r'(?:@([^ ]*) )?'                               # Tags
     r'(?::([^!@ ]*)(?:!([^@ ]*))?(?:@([^ ]*))? )?'  # Hostmask
-    r'([^@: ][^ ]*)(?: (.*?)(?: :(.*))?)?'          # Command and arguments
+    r'([^@: ][^ ]*)(?: (.*?))??(?: :(.*))?'          # Command and arguments
     r'$'
 )
 def ircv3_message_parser(msg):
@@ -354,14 +354,14 @@ class IRC:
 
     # User-friendly msg, notice, and CTCP functions.
     async def msg(self, target, *msg, tags=None):
-        await self.quote('PRIVMSG', target, ':' + ' '.join(msg), tags=tags)
+        await self.quote('PRIVMSG', target, ':' + ' '.join(map(str, msg)), tags=tags)
 
     async def notice(self, target, *msg, tags=None):
-        await self.quote('NOTICE', target, ':' + ' '.join(msg), tags=tags)
+        await self.quote('NOTICE', target, ':' + ' '.join(map(str, msg)), tags=tags)
 
     async def ctcp(self, target, *msg, reply=False, tags=None):
         m = (self.notice if reply else self.msg)
-        await m(target, f'\x01{" ".join(msg)}\x01', tags=tags)
+        await m(target, f'\x01{" ".join(map(str, msg))}\x01', tags=tags)
 
     async def me(self, target, *msg, tags=None):
         await self.ctcp(target, 'ACTION', *msg, tags=tags)
@@ -424,6 +424,9 @@ class IRC:
                 await self._task
             except asyncio.CancelledError:
                 pass
+
+        if hasattr(self, 'on_disconnect'):
+            self.on_disconnect()
 
     # Finish capability negotiation
     async def finish_negotiation(self, cap):
@@ -523,7 +526,7 @@ class IRC:
                 if not self.persist:
                     raise
 
-                self.debug('Failed to reconnect, trying again in 5 seconds.')
+                self.debug('Failed to connect, trying again in 5 seconds.')
                 await asyncio.sleep(5)
 
         self.debug('Main loop running!')
@@ -549,7 +552,8 @@ class IRC:
             except (asyncio.IncompleteReadError, asyncio.LimitOverrunError,
                     asyncio.TimeoutError, OSError) as exc:
                 self.debug('Lost connection!', repr(exc))
-                await self.disconnect(auto_reconnect=True)
+                # TODO: add logic to only reconnect if he have a successful initial connection, for now disabled auto-reconnect
+                await self.disconnect(auto_reconnect=False)
 
                 if self.persist:
                     await asyncio.sleep(5)

@@ -66,6 +66,5 @@ target/
 
 # Others
 examples/
-.vscode
-!.vscode/extensions.json
+.vscode/*
 !.vscode/launch.json
