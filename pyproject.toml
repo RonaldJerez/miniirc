@@ -10,8 +10,8 @@ dependencies = []
 
 [tool.taskipy.tasks]
 test = "pytest -v tests/"
-cov = "coverage run -m pytest -q && coverage report"
-cov-server = "coverage run -m pytest -q && python -m http.server 7777 -d ./htmlcov"
+cov = "coverage run -m pytest -q tests/ && coverage report"
+cov-server = "coverage html && python -m http.server 7777 -d ./htmlcov"
 
 [project.optional-dependencies]
 ssl = [

@@ -206,20 +206,6 @@ def _dict_to_tags(tags):
         return b''
     return res[:-1] + b' '
 
-# A wrapper for callable logfiles
-class _Logfile:
-    __slots__ = ('_buffer', '_func')
-
-    def write(self, data):
-        self._buffer += data
-        while '\n' in self._buffer:
-            line, self._buffer = self._buffer.split('\n', 1)
-            self._func(line)
-
-    def __init__(self, func):
-        self._buffer = ''
-        self._func = func
-
 # Replace invalid RFC1459 characters with Unicode lookalikes
 def _prune_arg(arg):
     if arg.startswith(':'):
@@ -302,15 +288,18 @@ class IRC:
 
     # Send raw messages
     async def quote(self, *msg, force=False, tags=None):
+        """Send raw messages via the transport"""
+        str_msg = ' '.join(msg)
+
         if not self.connected and not force:
-            logging.debug(f'>Q> {msg}')
+            logging.debug(f'>Q> {str_msg}')
             if not self._sendq:
                 self._sendq = []
             self._sendq.append((tags, msg))
             return
 
-        logging.debug(f'>>> {msg}')
-        msg = (' '.join(msg).replace('\x00', '\ufffd').encode('utf-8')
+        logging.debug(f'>>> {str_msg}')
+        msg = (str_msg.replace('\x00', '\ufffd').encode('utf-8')
                .replace(b'\r', b' ') .replace(b'\n', b' '))
 
         if len(msg) + 2 > self.msglen:
@@ -616,7 +605,7 @@ async def _handler(irc):
         if len(irc.current_nick) >= irc.isupport.get('NICKLEN', 20):
             return
         logging.warning(f'The requested nickname {irc.current_nick} is invalid.')
-        logging.warning(f'Trying again with {irc.current_nick + '_'}')
+        logging.warning(f'Trying again with {irc.current_nick}_')
         irc.current_nick += '_'
         await irc.quote('NICK', irc.current_nick, force=True)
 

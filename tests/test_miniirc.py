@@ -39,20 +39,6 @@ def test_dict_to_tags():
     ))
     assert dict_to_tags(tags_dict) == rb'@abc;jkl=test\r\n\:\s '
 
-def test_logfile():
-    msgs = []
-    logfile = miniirc._Logfile(msgs.append)
-    logfile.write('Hello world!\nThis is a test\rmessage\nto test the ')
-    logfile.write('_Logfile class.')
-    logfile.write('\n')
-    print('This is', 'the final line', file=logfile)
-    assert msgs == [
-        'Hello world!',
-        'This is a test\rmessage',
-        'to test the _Logfile class.',
-        'This is the final line'
-    ]
-
 class DummyIRC(miniirc.IRC):
     def __init__(self, ip='', port=0, nick='', *args, **kwargs):
         kwargs['auto_connect'] = False
