@@ -223,6 +223,7 @@ class IRC:
     _loop = None
     _sasl = False
     _unhandled_caps = None
+    _combined_handlers = None
 
     def __init__(self, ip, port, nick, channels=None, *, ssl=None, ident=None,
                  realname=None, persist=True, ns_identity=None,
@@ -268,7 +269,7 @@ class IRC:
 
         # Add handlers and set the default message parser
         self.change_parser()
-        self._handlers = {}
+        self._instance_handlers = {}
         if ssl is None and self.port == 6697:
             self.ssl = True
 
@@ -342,7 +343,7 @@ class IRC:
 
     # Allow per-connection handlers
     def Handler(self, *events):
-        return _add_handler(self._handlers, events)
+        return _add_handler(self._instance_handlers, events)
 
     def CmdHandler(self, *events):
         warnings.warn('CmdHandler is deprecated, use Handler instead', DeprecationWarning)
@@ -419,17 +420,19 @@ class IRC:
         self._parse = parser
 
     # Start a handler function
-    async def _start_handler(self, handlers, msg):
-        for handler in handlers:
+    async def _start_handler(self, handler, msg):
+        try:
             params = (self, msg)
             if handler.awaitable:
                 await handler.func(*params[:handler.params_count])
             else:
                 # Run non-async handlers in the event loop's default executor
                 await self._loop.run_in_executor(None, handler.func, *params[:handler.params_count])
+        except Exception as e:
+            logging.exception(f'Handler {handler.func.__name__} raised an exception: {e}')
 
     # Launch handlers
-    async def handle_msg(self, input_msg):
+    def handle_msg(self, input_msg):
         ctcp_msg = None
         handled = False
         input_command = input_msg.command.upper()
@@ -442,13 +445,17 @@ class IRC:
         msg = ctcp_msg or input_msg
         msg_command = msg.command.upper()
 
-        for handlers in (_global_handlers, self._handlers):
-            if msg_command in handlers:
-                await self._start_handler(handlers[msg_command], msg)
-                handled = True
+        # do this loop only once per instance, there shouldn't be any new handlers post init
+        if self._combined_handlers is None:
+            self._combined_handlers = {}
+            for key in set(_global_handlers) | set(self._instance_handlers):
+                self._combined_handlers[key] = _global_handlers.get(key, []) + self._instance_handlers.get(key, [])
 
-            if None in handlers:
-                await self._start_handler(handlers[None], msg)
+        handlers = self._combined_handlers.get(msg_command, []) + self._combined_handlers.get(None, [])
+        if len(handlers) > 0:
+            handled = True
+            for handler in handlers:
+                asyncio.create_task(self._start_handler(handler, msg))
 
         return handled
 
@@ -458,7 +465,7 @@ class IRC:
         self.active_caps.add(cap)
         if self._unhandled_caps and cap in self._unhandled_caps:
             msg = IRCMessage(f'CAP ACK {cap}', args=self._unhandled_caps[cap])
-            handled = await self.handle_msg(msg)
+            handled = self.handle_msg(msg)
             if not handled:
                 await self.finish_negotiation(cap)
 
@@ -545,7 +552,7 @@ class IRC:
                 try:
                     msg = self._parse(line_str)
                     if isinstance(msg, IRCMessage):
-                        await self.handle_msg(msg)
+                        self.handle_msg(msg)
                     else:
                         logging.debug(f'Ignored message: {line_str}')
                 except Exception:
@@ -626,7 +633,7 @@ async def _handler(irc, msg):
         return
 
     msg = IRCMessage(f'CAP {msg.args[1]}', msg.hostmask, args=msg.args)
-    await irc.handle_msg(msg)
+    irc.handle_msg(msg)
 
 @Handler('CAP ACK')
 async def _handler(irc, msg):
