@@ -5,21 +5,25 @@ import collections
 import pathlib
 from miniirc import IRCMessage, Hostmask
 
-print(Hostmask('n', 'u', 'h'))
+
 def test_message_parser():
     p = miniirc.ircv3_message_parser
     for i in range(4):
         hostmask = Hostmask(*('n', 'u', 'h')[:i])
-        hostmask_s = ':n!u@h'[:i * 2] + (' ' if i else '')
-        assert (p(hostmask_s + 'PRIVMSG #channel :Hello world!') ==
-                IRCMessage('PRIVMSG', hostmask, {}, ['#channel', 'Hello world!']))
+        hostmask_s = ':n!u@h'[: i * 2] + (' ' if i else '')
+        assert p(hostmask_s + 'PRIVMSG #channel :Hello world!') == IRCMessage(
+            'PRIVMSG', hostmask, {}, ['#channel', 'Hello world!']
+        )
 
     hostmask = Hostmask()
     empty_tag = ''
-    assert (p(r'@tag1=value\:\swith\s\\spaces\rand\nnewlines;tag2;tag3= Hi') ==
-            ('Hi', hostmask,
-             {'tag1': 'value; with \\spaces\rand\nnewlines', 'tag2': empty_tag,
-              'tag3': empty_tag}, []))
+    assert p(r'@tag1=value\:\swith\s\\spaces\rand\nnewlines;tag2;tag3= Hi') == (
+        'Hi',
+        hostmask,
+        {'tag1': 'value; with \\spaces\rand\nnewlines', 'tag2': empty_tag, 'tag3': empty_tag},
+        [],
+    )
+
 
 def test_version():
     pyproject_toml = pathlib.Path(__file__).resolve().parent.parent / 'pyproject.toml'
@@ -28,25 +32,25 @@ def test_version():
     assert match
     assert miniirc.__version__ == match.group(1)
 
-    assert ('.'.join(map(str, miniirc.ver[:3])) + ''.join(miniirc.ver[3:])
-            == miniirc.__version__)
+    assert '.'.join(map(str, miniirc.ver[:3])) + ''.join(miniirc.ver[3:]) == miniirc.__version__
     assert miniirc.version == 'miniirc IRC framework v' + miniirc.__version__
+
 
 def test_dict_to_tags():
     dict_to_tags = miniirc._dict_to_tags
-    tags_dict = collections.OrderedDict((
-        ('abc', True), ('def', False), ('ghi', ''), ('jkl', 'test\r\n; ')
-    ))
+    tags_dict = collections.OrderedDict((('abc', True), ('def', False), ('ghi', ''), ('jkl', 'test\r\n; ')))
     assert dict_to_tags(tags_dict) == rb'@abc;jkl=test\r\n\:\s '
+
 
 class DummyIRC(miniirc.IRC):
     def __init__(self, ip='', port=0, nick='', *args, **kwargs):
-        kwargs['auto_connect'] = False
         super().__init__(ip, port, nick, *args, **kwargs)
 
+
 class IRCQuoteWrapper(DummyIRC):
-    res: tuple | None  = None
+    res: tuple | None = None
     TEST_FUNC = 'quote'
+
     async def quote(self, *args, force=None, tags=None):
         assert self.res is None
         self.res = (' '.join(args), tags)
@@ -61,39 +65,50 @@ class IRCQuoteWrapper(DummyIRC):
     def make_test(cls, test_func):
         class res(cls):
             TEST_FUNC = test_func
+
         res.__name__ = res.__qualname__ = 'test_' + test_func
         return res.test
+
 
 @pytest.mark.asyncio
 async def test_irc_send():
     test = IRCQuoteWrapper.make_test('send')
     assert (await test('a')) == ('a', None)
     assert (await test('a', 'Hello world!', 'b')) == ('a Hello\xa0world! :b', None)
-    assert (await test('', 'abc def\r\n', ':ghi', ':jkl', tags={'a': 'b'}) ==
-            ('\xa0 abc\xa0def\xa0\xa0 \u0703ghi ::jkl', {'a': 'b'}))
+    assert await test('', 'abc def\r\n', ':ghi', ':jkl', tags={'a': 'b'}) == (
+        '\xa0 abc\xa0def\xa0\xa0 \u0703ghi ::jkl',
+        {'a': 'b'},
+    )
+
 
 irc_msg_funcs = {
     'msg': 'PRIVMSG {} :{}',
     'notice': 'NOTICE {} :{}',
     'ctcp': 'PRIVMSG {} :\x01{}\x01',
-    'me': 'PRIVMSG {} :\x01ACTION {}\x01'
+    'me': 'PRIVMSG {} :\x01ACTION {}\x01',
 }
+
 
 @pytest.mark.asyncio
 async def test_irc_msg_funcs():
     for func, fmt in irc_msg_funcs.items():
         test = IRCQuoteWrapper.make_test(func)
         assert (await test('abc', ':def')) == (fmt.format('abc', ':def'), None)
-        assert (await test('target', 'hello', 'world', tags={'abc': 'def'}) ==
-            (fmt.format('target', 'hello world'), {'abc': 'def'}))
+        assert await test('target', 'hello', 'world', tags={'abc': 'def'}) == (
+            fmt.format('target', 'hello world'),
+            {'abc': 'def'},
+        )
+
 
 def test_change_parser():
     irc = DummyIRC()
     assert irc._parse == miniirc.ircv3_message_parser
-    def f(msg):
-        ...
+
+    def f(msg): ...
+
     irc.change_parser(f)
     assert irc._parse == f
+
 
 def test_get_ca_certs():
     certs = miniirc.get_ca_certs()

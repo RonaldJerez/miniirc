@@ -1,6 +1,8 @@
-ignore=['E401', 'E402']
 line-length = 120
 indent-width = 4
+
+[lint]
+ignore=['E401', 'E402']
 
 [format]
 preview = true

@@ -2,6 +2,7 @@ import asyncio
 import miniirc
 import pytest
 
+
 @pytest.mark.asyncio
 async def test_connection():
     irc = None
@@ -17,14 +18,14 @@ async def test_connection():
                 '001 miniirc-test_ parameter test :with colon\n'
                 '005 * CAP=END :isupport description\n'
             ),
-            'USER miniirc-test 0 * :miniirc-test':
+            'USER test 0 * :miniirc-test':
                 ':a PRIVMSG miniirc-test :\x01VERSION\x01',
             'NICK miniirc-test': '433',
-            'NICK :miniirc-test': '433',
             'NICK miniirc-test_': '',
             'NOTICE a :\x01VERSION ' + miniirc.version + '\x01':
                 '005 miniirc-test CTCP=VERSION :are supported by this server',
             'QUIT :I grew sick and died.': '',
+            'SUCCESS': '',
         }
 
         line = None
@@ -45,8 +46,7 @@ async def test_connection():
     ip, port = server.sockets[0].getsockname()
 
     try:
-        irc = miniirc.IRC(ip, port, 'miniirc-test', auto_connect=False,
-            ns_identity=('test', 'hunter2'), persist=False)
+        irc = miniirc.IRC(ip, port, 'miniirc-test', username='test', password='hunter2', persist=False)
         assert irc.connected is None
 
         @irc.Handler('001')
@@ -54,13 +54,13 @@ async def test_connection():
             assert msg.args == ['miniirc-test_', 'parameter', 'test', 'with colon']
 
         state = {'count': 0}
-        
+
         @irc.Handler('005')
         async def _handle_005(irc):
             state['count'] = state['count'] + 1
             if state['count'] < 2:
                 return
-            
+
             assert irc.isupport == {'CTCP': 'VERSION', 'CAP': 'END'}
             await irc.send('SUCCESS')
 

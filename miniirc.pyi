@@ -13,53 +13,48 @@ version: str = ...
 __version__: str = ...
 
 # __all__ and _default_caps
-__all__: list[str] = ['CmdHandler', 'Handler', 'IRC']
-_default_caps: set[str] = {'account-notify', 'account-tag', 'away-notify',
-    'cap-notify', 'chghost', 'extended-join', 'invite-notify',
-    'message-tags', 'server-time', 'sts'}
+__all__: list[str] = ['Handler', 'IRC', 'IRCMessage', 'Hostmask', 'register_numerics']
+_default_caps: set[str] = {
+    'account-notify',
+    'account-tag',
+    'away-notify',
+    'cap-notify',
+    'chghost',
+    'extended-join',
+    'invite-notify',
+    'message-tags',
+    'server-time',
+    'sts',
+}
 
 # Get the certificate list.
 get_ca_certs: Callable[[], Optional[str]]
 try:
-    from certifi import where as get_ca_certs # type: ignore
+    from certifi import where as get_ca_certs  # type: ignore
 except ImportError:
     def get_ca_certs():
         pass
 
-_handler_func_1 = Callable[['IRC', tuple[str, str, str], list[str]], Any]
-_handler_func_2 = Callable[['IRC', tuple[str, str, str],
-                            dict[str, Union[str, bool]], list[str]], Any]
-@overload
-def Handler(*events: str, colon: bool = False, ircv3: Literal[False] = False) \
-    -> Callable[[_handler_func_1], _handler_func_1]: ...
-@overload
-def Handler(*events: str, colon: bool = False, ircv3: Literal[True]) \
-    -> Callable[[_handler_func_2], _handler_func_2]: ...
+_handler_func_1 = Callable[['IRC'], Any]
+_handler_func_2 = Callable[['IRC', 'IRCMessage'], Any]
 
-_handler_func_3 = Callable[['IRC', str, tuple[str, str, str], list[str]], Any]
-_handler_func_4 = Callable[['IRC', str, tuple[str, str, str],
-                            dict[str, Union[str, bool]], list[str]], Any]
 @overload
-def CmdHandler(*events: str, colon: bool = False,
-    ircv3: Literal[False] = False) -> Callable[[_handler_func_3], _handler_func_3]: ...
+def Handler(*events: str) -> Callable[[_handler_func_1], _handler_func_1]: ...
 @overload
-def CmdHandler(*events: str, colon: bool = False, ircv3: Literal[True]) \
-    -> Callable[[_handler_func_4], _handler_func_4]: ...
+def Handler(*events: str) -> Callable[[_handler_func_2], _handler_func_2]: ...
 
 # Parse IRCv3 tags (renamed to match implementation)
 _ircv3_tag_escapes: dict[str, str] = {':': ';', 's': ' ', 'r': '\r', 'n': '\n'}
+
 def _tag_list_to_dict(tag_list: Iterable[str]) -> dict[str, str]: ...
 
 # Create the IRCv2/3 parser
-Hostmask = NamedTuple('Hostmask', [
-    ('nick', str),
-    ('user', str),
-    ('host', str) ])
-IRCMessage = NamedTuple('IRCMessage', [
-    ('command', str),
-    ('hostmask', tuple[str, str, str]),
-    ('tags', dict[str, Union[str, bool]]),
-    ('args', list[str]) ])
+Hostmask = NamedTuple('Hostmask', [('nick', str), ('user', str), ('host', str)])
+IRCMessage = NamedTuple(
+    'IRCMessage',
+    [('command', str), ('hostmask', Hostmask), ('tags', dict[str, Union[str, bool]]), ('args', list[str])],
+)
+
 def ircv3_message_parser(msg: str) -> IRCMessage: ...
 
 # Escape tags
@@ -67,32 +62,20 @@ def _escape_tag(tag: str) -> str: ...
 
 # Convert a dict into an IRCv3 tags string
 def _dict_to_tags(tags: dict[str, Union[str, bool]]) -> bytes: ...
-
-# A wrapper for callable logfiles
-class _Logfile:
-    __slots__ = ('_buffer', '_func')
-
-    def write(self, data: str) -> None: ...
-    def __init__(self, func: Callable[[str], Any]) -> None: ...
-
 def register_numerics(numerics: dict[str, str]) -> None: ...
-
 def _event_name_to_numeric(event: str) -> str | None: ...
-
-def subcommand_from_msg(prefix: str, msg: IRCMessage) -> IRCMessage: ...
 
 # Create the IRC class
 class IRC:
     connected: Optional[bool] = None
-    debug_file: Optional[Union[io.TextIOWrapper, _Logfile]] = ...
     msglen: int = 512
 
-    ip: str
+    host: str
     port: int
     nick: str
     current_nick: str
     channels: set[str]
-    ident: str
+    username: str
     realname: str
     ssl: Optional[bool]
     persist: bool
@@ -106,8 +89,6 @@ class IRC:
     verify_ssl: bool
     server_password: Optional[str]
 
-    ns_identity: Optional[Union[tuple[str, str], str]]
-
     # Internal runtime attrs
     _sendq: Optional[list[Any]]
     _loop: AbstractEventLoop
@@ -115,77 +96,58 @@ class IRC:
     _sasl: bool
     _unhandled_caps: Optional[dict[str, Any]]
 
-    # Debug print()
-    def debug(self, *args: Any, **kwargs) -> None: ...
-
     # Send raw messages
-    async def quote(self, *msg: str, force: bool = False,
-        tags: Optional[dict[str, Union[str, bool]]] = None) -> None: ...
+    async def quote(
+        self, *msg: str, force: bool = False, tags: Optional[dict[str, Union[str, bool]]] = None
+    ) -> None: ...
+    async def send(
+        self, command: str, *args: str, force: bool = False, tags: Optional[dict[str, Union[str, bool]]] = None
+    ) -> None: ...
 
-    async def send(self, command: str, *args: str, force: bool = False,
-        tags: Optional[dict[str, Union[str, bool]]] = None) -> None: ...
-        
     # User-friendly msg, notice, and ctcp functions.
-    async def msg(self, target: str, *msg: str,
-        tags: Optional[dict[str, Union[str, bool]]] = None) -> None: ...
-
-    async def notice(self, target: str, *msg: str,
-        tags: Optional[dict[str, Union[str, bool]]] = None) -> None: ...
-
-    async def ctcp(self, target: str, *msg: str, reply: bool = False,
-        tags: Optional[dict[str, Union[str, bool]]] = None) -> None: ...
-
-    async def me(self, target: str, *msg: str,
-        tags: Optional[dict[str, Union[str, bool]]] = None) -> None: ...
+    async def msg(self, target: str, *msg: str, tags: Optional[dict[str, Union[str, bool]]] = None) -> None: ...
+    async def notice(self, target: str, *msg: str, tags: Optional[dict[str, Union[str, bool]]] = None) -> None: ...
+    async def ctcp(
+        self, target: str, *msg: str, reply: bool = False, tags: Optional[dict[str, Union[str, bool]]] = None
+    ) -> None: ...
+    async def me(self, target: str, *msg: str, tags: Optional[dict[str, Union[str, bool]]] = None) -> None: ...
 
     # Allow per-connection handlers
     @overload
-    def Handler(*events: str, colon: bool = False,
-        ircv3: Literal[False] = False) \
-        -> Callable[[_handler_func_1], _handler_func_1]: ...
+    def Handler(*events: str) -> Callable[[_handler_func_1], _handler_func_1]: ...
     @overload
-    def Handler(*events: str, colon: bool = False, ircv3: Literal[True]) \
-        -> Callable[[_handler_func_2], _handler_func_2]: ...
-
-    @overload
-    def CmdHandler(*events: str, colon: bool = False,
-        ircv3: Literal[False] = False) \
-        -> Callable[[_handler_func_3], _handler_func_3]: ...
-    @overload
-    def CmdHandler(*events: str, colon: bool = False, ircv3: Literal[True]) \
-        -> Callable[[_handler_func_4], _handler_func_4]: ...
+    def Handler(*events: str) -> Callable[[_handler_func_2], _handler_func_2]: ...
 
     # The connect function
     async def connect(self, *, loop: Optional[Any] = None) -> None: ...
 
     # An easier way to disconnect
-    async def disconnect(self, msg: Optional[str] = None, *,
-        auto_reconnect: bool = False) -> None: ...
+    async def disconnect(self, msg: Optional[str] = None, *, auto_reconnect: bool = False) -> None: ...
 
     # Finish capability negotiation
     async def finish_negotiation(self, cap: str) -> None: ...
 
     # Change the message parser
-    def change_parser(self, parser: Callable[[str],
-        IRCMessage] = ircv3_message_parser) -> None: ...
+    def change_parser(self, parser: Callable[[str], IRCMessage] = ircv3_message_parser) -> None: ...
 
     # Initialize the class
-    def __init__(self, ip: str, port: int, nick: str,
-        channels: Optional[Union[Iterable[str], str]] = None, *,
-        ssl: Optional[bool] = None, 
-        ident: Optional[str] = None,
-        realname: Optional[str] = None, 
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        nick: str,
+        *,
+        channels: Optional[Union[Iterable[str], str]] = None,
+        ssl: Optional[bool] = None,
+        username: Optional[str] = None,
+        realname: Optional[str] = None,
         persist: bool = True,
-        debug: Union[bool, io.TextIOWrapper, _Logfile] = False,
-        ns_identity: Optional[Union[tuple[str, str], str]] = None,
-        auto_connect: bool = True, 
         ircv3_caps: Optional[set[str]] = None,
         connect_modes: Optional[str] = None,
-        quit_message: str = 'I grew sick and died.', 
         ping_interval: int = 60,
         ping_timeout: Optional[int] = None,
-        verify_ssl: bool = True, 
+        verify_ssl: bool = True,
         server_password: Optional[str] = None,
-        loop: Optional[Any] = None) -> None: ...
+    ) -> None: ...
 
     async def wait_until_disconnected(self) -> None: ...

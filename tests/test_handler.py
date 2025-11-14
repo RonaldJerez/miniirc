@@ -3,9 +3,10 @@ import pytest
 import asyncio
 from miniirc import IRCMessage, Hostmask
 
+
 class DummyIRC(miniirc.IRC):
     def __init__(self):
-        super().__init__('localhost', 6697, 'tester', auto_connect=False)
+        super().__init__('localhost', 6697, 'tester')
 
     # ensure we have a loop since we wont be calling connect
     def handle_msg(self, input_msg):
@@ -18,13 +19,14 @@ def verify_handler(event):
     handler = miniirc._global_handlers[event][-1]
     assert handler.awaitable
 
+
 def test_Handler():
     try:
         tmp, miniirc._global_handlers = miniirc._global_handlers, {}
-        
+
         @miniirc.Handler('test', '1')
-        async def f(irc, msg):
-            ...
+        async def f(irc, msg): ...
+
         verify_handler('TEST')
         verify_handler('1')
 
@@ -38,6 +40,7 @@ def test_Handler():
     finally:
         miniirc._global_handlers = tmp
 
+
 def test_handler_signatures():
     try:
         tmp, miniirc._global_handlers = miniirc._global_handlers, {}
@@ -45,29 +48,33 @@ def test_handler_signatures():
         # Test simple handler with no args
         @miniirc.Handler('TEST1')
         async def handler1(): ...
+
         handler = miniirc._global_handlers['TEST1'][-1]
         assert handler.params_count == 0
-        
+
         # Test handler with single parameter
         @miniirc.Handler('TEST2')
         async def handler2(irc): ...
+
         handler = miniirc._global_handlers['TEST2'][-1]
         assert handler.params_count == 1
 
         # Test handler with all parameters
         @miniirc.Handler('TEST3')
         async def handler4(irc, msg): ...
+
         handler = miniirc._global_handlers['TEST3'][-1]
         assert handler.params_count == 2
 
-
         # should raise if too many params
         with pytest.raises(TypeError):
+
             @miniirc.Handler('TEST6')
             async def handler_wrong3(irc, msg, tt): ...
 
     finally:
         miniirc._global_handlers = tmp
+
 
 @pytest.mark.asyncio
 async def test_handler_execution():
@@ -95,16 +102,14 @@ async def test_handler_execution():
     assert results == [
         ('handler1', ['arg1', 'arg2']),
         ('handler2', 'TEST', ['arg1', 'arg2']),
-        ('handler3', 'TEST', Hostmask('nick', 'user', 'host'), {'tag': 'value'}, ['arg1', 'arg2'])
+        ('handler3', 'TEST', Hostmask('nick', 'user', 'host'), {'tag': 'value'}, ['arg1', 'arg2']),
     ]
+
 
 @pytest.mark.asyncio
 async def test_ctcp_handlers():
     irc = DummyIRC()
-    called = {
-        'PRIVMSG': 0,
-        'CTCP': 0
-    }
+    called = {'PRIVMSG': 0, 'CTCP': 0}
 
     @irc.Handler('PRIVMSG', 'CTCP VERSION', 'CTCP ACTION')
     def handle_all(irc, msg):
@@ -133,6 +138,7 @@ async def test_ctcp_handlers():
     assert called['PRIVMSG'] == 1
     assert called['CTCP'] == 2
 
+
 @pytest.mark.asyncio
 async def test_concurrency():
     irc = DummyIRC()
@@ -156,4 +162,3 @@ async def test_concurrency():
     await asyncio.sleep(0.4)
 
     assert completion_order == ['1st', '2nd', '3rd']
-    
