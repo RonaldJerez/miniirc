@@ -49,9 +49,9 @@ class DummyIRC(miniirc.IRC):
 
 class IRCQuoteWrapper(DummyIRC):
     res: tuple | None = None
-    TEST_FUNC = 'quote'
+    TEST_FUNC = 'send'
 
-    async def quote(self, *args, force=None, tags=None):
+    async def send(self, *args, force=None, tags=None):
         assert self.res is None
         self.res = (' '.join(args), tags)
 
@@ -70,17 +70,6 @@ class IRCQuoteWrapper(DummyIRC):
         return res.test
 
 
-@pytest.mark.asyncio
-async def test_irc_send():
-    test = IRCQuoteWrapper.make_test('send')
-    assert (await test('a')) == ('a', None)
-    assert (await test('a', 'Hello world!', 'b')) == ('a Hello\xa0world! :b', None)
-    assert await test('', 'abc def\r\n', ':ghi', ':jkl', tags={'a': 'b'}) == (
-        '\xa0 abc\xa0def\xa0\xa0 \u0703ghi ::jkl',
-        {'a': 'b'},
-    )
-
-
 irc_msg_funcs = {
     'msg': 'PRIVMSG {} :{}',
     'notice': 'NOTICE {} :{}',
@@ -94,7 +83,7 @@ async def test_irc_msg_funcs():
     for func, fmt in irc_msg_funcs.items():
         test = IRCQuoteWrapper.make_test(func)
         assert (await test('abc', ':def')) == (fmt.format('abc', ':def'), None)
-        assert await test('target', 'hello', 'world', tags={'abc': 'def'}) == (
+        assert await test('target', 'hello world', tags={'abc': 'def'}) == (
             fmt.format('target', 'hello world'),
             {'abc': 'def'},
         )

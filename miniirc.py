@@ -247,17 +247,6 @@ def _dict_to_tags(tags):
         return b''
     return res[:-1] + b' '
 
-
-def _prune_arg(arg):
-    """Replace invalid RFC1459 characters with Unicode lookalikes"""
-    if arg.startswith(':'):
-        arg = '\u0703' + arg[1:]
-    elif not arg:
-        # Replace the argument with something to prevent misinterpretation
-        arg = ' '
-    return arg.replace(' ', '\xa0').replace('\r', '\xa0').replace('\n', '\xa0')
-
-
 class IRC:
     """An IRC client connection supporting IRCv2 and IRCv3 features."""
 
@@ -313,9 +302,19 @@ class IRC:
         if ssl is None and self.port == 6697:
             self.ssl = True
 
-    async def quote(self, *msg, force=False, tags=None):
-        """Send raw messages via the transport."""
-        str_msg = ' '.join(msg)
+    async def send(self, *msg, force=False, tags=None):
+        """Send a raw IRC message by joining arguments with spaces.
+        
+        This is the low-level method that sends exactly what you provide.
+        For formatted IRC commands with automatic trailing parameter handling,
+        use command() instead.
+        
+        Args:
+            *msg: Message components to join with spaces
+            force: Send even if not connected (for connection setup)
+            tags: IRCv3 message tags dictionary
+        """
+        str_msg = ' '.join(str(m) for m in msg)
 
         if not self.connected and not force:
             logger.debug(f'>Q> {str_msg}')
@@ -325,50 +324,54 @@ class IRC:
             return
 
         logger.debug(f'>>> {str_msg}')
-        msg = str_msg.replace('\x00', '\ufffd').encode('utf-8').replace(b'\r', b' ').replace(b'\n', b' ')
+        
+        # Convert to bytes
+        msg_bytes = str_msg.replace('\x00', '\ufffd').encode('utf-8', errors='replace')
+        msg_bytes = msg_bytes.replace(b'\r', b' ').replace(b'\n', b' ')
 
-        if len(msg) + 2 > self.msglen:
-            msg = msg[: self.msglen - 2]
-            if msg[-1] >= 0x80:
-                msg = msg.decode('utf-8', 'ignore').encode('utf-8')
+        # Truncate if needed
+        if len(msg_bytes) + 2 > self.msglen:
+            msg_bytes = msg_bytes[: self.msglen - 2]
+            # Re-decode and encode to avoid splitting multi-byte characters
+            msg_bytes = msg_bytes.decode('utf-8', errors='ignore').encode('utf-8')
 
+        # Add tags if applicable
         if isinstance(tags, dict) and 'message-tags' in self.active_caps:
-            msg = _dict_to_tags(tags) + msg
+            msg_bytes = _dict_to_tags(tags) + msg_bytes
 
-        msg += b'\r\n'
-        self._writer.write(msg)
-        await self._writer.drain()
-
-    async def send(self, command, *args, force=False, tags=None):
-        """Send a command with arguments to the IRC server."""
-        if args:
-            await self.quote(
-                _prune_arg(command),
-                *map(_prune_arg, args[:-1]),
-                ':' + args[-1],
-                force=force,
-                tags=tags
-            )
-        else:
-            await self.quote(_prune_arg(command), force=force, tags=tags)
+        msg_bytes += b'\r\n'
+        
+        try:
+            self._writer.write(msg_bytes)
+            await self._writer.drain()
+        except Exception as e:
+            logger.error(f'Error sending message: {e}')
+            raise
 
     # User-friendly msg, notice, and CTCP functions.
-    async def msg(self, target, *msg, tags=None):
+    async def command(self, command, *args, force=False, tags=None):
+        """Send a IRC command with arguments. Applying ':' to the last argument."""
+        if args:
+            args = list(args)
+            args[-1] = ':' + str(args[-1])
+        await self.send(command, *args, force=force, tags=tags)
+
+    async def msg(self, target, msg, tags=None):
         """Send a PRIVMSG to a target."""
-        await self.quote('PRIVMSG', target, ':' + ' '.join(map(str, msg)), tags=tags)
+        await self.command('PRIVMSG', target, msg, tags=tags)
 
-    async def notice(self, target, *msg, tags=None):
+    async def notice(self, target, msg, tags=None):
         """Send a NOTICE to a target."""
-        await self.quote('NOTICE', target, ':' + ' '.join(map(str, msg)), tags=tags)
-
+        await self.command('NOTICE', target, msg, tags=tags)
+        
     async def ctcp(self, target, *msg, reply=False, tags=None):
         """Send a CTCP message or reply to a target."""
         m = self.notice if reply else self.msg
         await m(target, f'\x01{" ".join(map(str, msg))}\x01', tags=tags)
 
-    async def me(self, target, *msg, tags=None):
+    async def me(self, target, msg, tags=None):
         """Send a CTCP ACTION (/me) to a target."""
-        await self.ctcp(target, 'ACTION', *msg, tags=tags)
+        await self.ctcp(target, 'ACTION', msg, tags=tags)
 
     def Handler(self, *events):
         """Register a handler for this IRC instance."""
@@ -408,7 +411,7 @@ class IRC:
         self.active_caps.clear()
         self._unhandled_caps = None
         try:
-            await self.quote('QUIT :' + str(msg or self.quit_message), force=True)
+            await self.command('QUIT', msg or self.quit_message, force=True)
         except Exception:
             pass
 
@@ -439,7 +442,7 @@ class IRC:
             if len(self._unhandled_caps) < 1:
                 self._unhandled_caps = None
                 if not self.connected:
-                    await self.quote('CAP END', force=True)
+                    await self.send('CAP END', force=True)
 
     def change_parser(self, parser=ircv3_message_parser):
         """Change the message parser used for incoming messages."""
@@ -498,10 +501,10 @@ class IRC:
     async def _send_initial_msgs(self):
         """Send initial registration and capability negotiation messages."""
         if self.server_password:
-            await self.quote('PASS', self.server_password, force=True)
-        await self.quote('CAP LS 302', force=True)
-        await self.quote('USER', self.username, '0 * :' + self.realname, force=True)
-        await self.quote('NICK', self.nick, force=True)
+            await self.send('PASS', self.server_password, force=True)
+        await self.send('CAP LS 302', force=True)
+        await self.command('USER', self.username, '0 *', self.realname, force=True)
+        await self.send('NICK', self.nick, force=True)
 
     async def _async_main(self):
         """Main loop for reading and handling IRC messages."""
@@ -549,7 +552,7 @@ class IRC:
                         raise
 
                     self._pinged = True
-                    await self.quote('PING :miniirc-ping', force=True)
+                    await self.send('PING :miniirc-ping', force=True)
                     continue
 
                 if not line:
@@ -604,24 +607,24 @@ async def _handler(irc):
     logger.debug('Welcome message received!')
 
     if irc.connect_modes:
-        await irc.quote('MODE', irc.current_nick, irc.connect_modes)
+        await irc.send('MODE', irc.current_nick, irc.connect_modes)
     if not irc._sasl and irc.password:
         logger.debug('Logging in (no SASL, aww)...')
         await irc.msg('NickServ', 'identify', irc.password)
     if irc.channels:
         logger.debug(f'*** Joining channels... {irc.channels}')
-        await irc.quote('JOIN', ','.join(irc.channels))
+        await irc.send('JOIN', ','.join(irc.channels))
 
     # Handle queued messages
     sendq, irc._sendq = irc._sendq, None
     if sendq:
         for tags, args in sendq:
-            await irc.quote(*args, tags=tags)
+            await irc.send(*args, tags=tags)
 
 
 @Handler('PING')
 async def _handler(irc, msg):
-    await irc.send('PONG', *msg.args, force=True)
+    await irc.command('PONG', *msg.args, force=True)
 
 
 @Handler('PONG')
@@ -642,7 +645,7 @@ async def _handler(irc):
         logger.warning(f'The requested nickname {irc.current_nick} is invalid.')
         logger.warning(f'Trying again with {irc.current_nick}_')
         irc.current_nick += '_'
-        await irc.quote('NICK', irc.current_nick, force=True)
+        await irc.send('NICK', irc.current_nick, force=True)
 
 
 @Handler('NICK')
@@ -677,7 +680,7 @@ async def _handler(irc, msg):
 @Handler('CAP NAK')
 async def _handler(irc):
     irc._unhandled_caps = None
-    await irc.quote('CAP END', force=True)
+    await irc.send('CAP END', force=True)
 
 
 @Handler('CAP LS', 'CAP NEW')
@@ -703,10 +706,10 @@ async def _handler(irc, msg):
     if irc.connected is None:
         return
     elif req:
-        await irc.quote('CAP REQ', ':' + ' '.join(req), force=True)
+        await irc.command('CAP', 'REQ', ' '.join(req), force=True)
     elif msg.command == 'CAP LS' and not irc._unhandled_caps and not multiline:
         irc._unhandled_caps = None
-        await irc.quote('CAP END', force=True)
+        await irc.send('CAP END', force=True)
 
 
 @Handler('CAP DEL')
@@ -723,9 +726,9 @@ async def _handler(irc, msg):
 async def _handler(irc, msg):
     sasl_options = msg.args[-1].upper().split(',')
     if irc.password and (len(msg.args) < 2 or 'PLAIN' in sasl_options):
-        await irc.quote('AUTHENTICATE PLAIN', force=True)
+        await irc.send('AUTHENTICATE PLAIN', force=True)
     else:
-        await irc.quote('AUTHENTICATE *', force=True)
+        await irc.send('AUTHENTICATE *', force=True)
         await irc.finish_negotiation('sasl')
 
 
@@ -734,14 +737,14 @@ async def _handler(irc, msg):
     if msg.args and msg.args[0] == '+':
         irc._sasl = True
         pw = f'{irc.username}\x00{irc.username}\x00{irc.password}'.encode('utf-8')
-        await irc.quote('AUTHENTICATE', b64encode(pw).decode('utf-8'), force=True)
+        await irc.send('AUTHENTICATE', b64encode(pw).decode('utf-8'), force=True)
 
 
 @Handler('ERR_SASLFAIL', 'ERR_SASLABORTED')
 async def _handler(irc):
     if irc._sasl:
         irc._sasl = False
-        await irc.quote('AUTHENTICATE *', force=True)
+        await irc.send('AUTHENTICATE *', force=True)
 
 
 @Handler('ERR_NICKLOCKED', 'RPL_SASLSUCCESS', 'ERR_SASLFAIL', 'ERR_SASLABORTED')
