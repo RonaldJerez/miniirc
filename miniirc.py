@@ -79,6 +79,7 @@ _global_handlers = {}
 
 
 class _Handler:
+    """Internal handler wrapper for IRC event callbacks."""
     __slots__ = ('func', 'awaitable', 'params_count')
 
     def __init__(self, func):
@@ -93,6 +94,7 @@ class _Handler:
 
 
 def _add_handler(handlers, events):
+    """Decorator to add a handler for one or more IRC events."""
     if not events:
         raise TypeError('Handler() called without arguments.')
 
@@ -110,6 +112,7 @@ def _add_handler(handlers, events):
 
 
 def Handler(*events):
+    """Decorator to register a global handler for IRC events."""
     return _add_handler(_global_handlers, events)
 
 
@@ -118,6 +121,8 @@ _ircv3_tag_escapes = {':': ';', 's': ' ', 'r': '\r', 'n': '\n'}
 
 
 def _tag_list_to_dict(tag_list):
+    """Convert a list of IRCv3 tag strings to a dictionary."""
+    
     tags = {}
     for tag in tag_list:
         tag = tag.split('=', 1)
@@ -144,19 +149,29 @@ def _tag_list_to_dict(tag_list):
 
 # Create the IRCv2/3 parser
 class Hostmask(NamedTuple):
+    """Represents an IRC hostmask (nick!user@host)."""
     nick: str = ''
     user: str = ''
     host: str = ''
 
 
 class IRCMessage(NamedTuple):
+    """Represents a parsed IRC message."""
     command: str
     hostmask: Hostmask = Hostmask()
     tags: dict | None = None
     args: list | None = None
 
     def sub_command(self, prefix):
-        """Creates a new message with sub-commands from the current message"""
+        """
+        Creates a new message with sub-commands from the current message.
+
+        Example:
+            msg = IRCMessage('PRIVMSG', ..., args=['#chan', '\x01ACTION waves\x01'])
+            sub = msg.sub_command('CTCP')
+            # sub.command == 'CTCP ACTION'
+            # sub.args == ['#chan', 'waves']
+        """
         target, text = self.args
 
         if text.startswith('\x01') and text.endswith('\x01'):
@@ -183,6 +198,7 @@ _msg_re = re.compile(
 
 
 def ircv3_message_parser(msg):
+    """Parse a raw IRC message string into an IRCMessage object."""
     match = _msg_re.match(msg)
     if not match:
         return
@@ -207,16 +223,16 @@ def ircv3_message_parser(msg):
     return IRCMessage(cmd, hostmask, tags, args)
 
 
-# Escape tags
 def _escape_tag(tag):
+    """Escape a tag value for IRCv3 message tags."""
     tag = str(tag).replace('\\', '\\\\')
     for i in _ircv3_tag_escapes:
         tag = tag.replace(_ircv3_tag_escapes[i], '\\' + i)
     return tag
 
 
-# Convert a dict into an IRCv3 tags string
 def _dict_to_tags(tags):
+    """Convert a dictionary of tags to an IRCv3 tag string."""
     res = b'@'
     for tag, value in tags.items():
         if value and value != '':
@@ -232,8 +248,8 @@ def _dict_to_tags(tags):
     return res[:-1] + b' '
 
 
-# Replace invalid RFC1459 characters with Unicode lookalikes
 def _prune_arg(arg):
+    """Replace invalid RFC1459 characters with Unicode lookalikes"""
     if arg.startswith(':'):
         arg = '\u0703' + arg[1:]
     elif not arg:
@@ -242,8 +258,9 @@ def _prune_arg(arg):
     return arg.replace(' ', '\xa0').replace('\r', '\xa0').replace('\n', '\xa0')
 
 
-# Create the IRC class
 class IRC:
+    """An IRC client connection supporting IRCv2 and IRCv3 features."""
+
     connected = None
     msglen = 512
     quit_message = 'I grew sick and died.'
@@ -261,6 +278,7 @@ class IRC:
                  persist=True, ssl=None, verify_ssl=True,
                  ircv3_caps=None, connect_modes=None,
                  ping_interval=60, ping_timeout=None):
+        
         # Set basic variables
         self.host = host
         self.port = int(port)
@@ -295,9 +313,8 @@ class IRC:
         if ssl is None and self.port == 6697:
             self.ssl = True
 
-    # Send raw messages
     async def quote(self, *msg, force=False, tags=None):
-        """Send raw messages via the transport"""
+        """Send raw messages via the transport."""
         str_msg = ' '.join(msg)
 
         if not self.connected and not force:
@@ -323,6 +340,7 @@ class IRC:
         await self._writer.drain()
 
     async def send(self, command, *args, force=False, tags=None):
+        """Send a command with arguments to the IRC server."""
         if args:
             await self.quote(
                 _prune_arg(command),
@@ -336,24 +354,28 @@ class IRC:
 
     # User-friendly msg, notice, and CTCP functions.
     async def msg(self, target, *msg, tags=None):
+        """Send a PRIVMSG to a target."""
         await self.quote('PRIVMSG', target, ':' + ' '.join(map(str, msg)), tags=tags)
 
     async def notice(self, target, *msg, tags=None):
+        """Send a NOTICE to a target."""
         await self.quote('NOTICE', target, ':' + ' '.join(map(str, msg)), tags=tags)
 
     async def ctcp(self, target, *msg, reply=False, tags=None):
+        """Send a CTCP message or reply to a target."""
         m = self.notice if reply else self.msg
         await m(target, f'\x01{" ".join(map(str, msg))}\x01', tags=tags)
 
     async def me(self, target, *msg, tags=None):
+        """Send a CTCP ACTION (/me) to a target."""
         await self.ctcp(target, 'ACTION', *msg, tags=tags)
 
-    # Allow per-connection handlers
     def Handler(self, *events):
+        """Register a handler for this IRC instance."""
         return _add_handler(self._instance_handlers, events)
 
-    # The connect function
     async def connect(self, *, loop=None):
+        """Connect to the IRC server and start the main loop."""
         if self.connected is not None:
             logger.debug('Already connected!')
             return
@@ -376,8 +398,8 @@ class IRC:
         self._task = self._loop.create_task(self._async_main())
         await self._task
 
-    # Disconnect from IRC.
     async def disconnect(self, msg=None, *, auto_reconnect=False):
+        """Disconnect from the IRC server."""
         if self._loop is None:
             return
 
@@ -407,8 +429,8 @@ class IRC:
         if hasattr(self, 'on_disconnect'):
             self.on_disconnect()
 
-    # Finish capability negotiation
     async def finish_negotiation(self, cap):
+        """Finish IRCv3 capability negotiation for a given capability."""
         logger.debug(f'Capability {cap} handled')
         if self._unhandled_caps:
             cap = cap.lower()
@@ -419,12 +441,12 @@ class IRC:
                 if not self.connected:
                     await self.quote('CAP END', force=True)
 
-    # Change the message parser
     def change_parser(self, parser=ircv3_message_parser):
+        """Change the message parser used for incoming messages."""
         self._parse = parser
 
-    # Start a handler function
     async def _start_handler(self, handler, msg):
+        """Start a handler for a given message, running async or in executor."""
         try:
             params = (self, msg)
             if handler.awaitable:
@@ -435,8 +457,8 @@ class IRC:
         except Exception as e:
             logger.exception(f'Handler {handler.func.__name__} raised an exception: {e}')
 
-    # Launch handlers
     def handle_msg(self, input_msg):
+        """Dispatch a parsed IRC message to registered handlers."""
         ctcp_msg = None
         handled = False
         input_command = input_msg.command.upper()
@@ -463,8 +485,8 @@ class IRC:
 
         return handled
 
-    # Launch IRCv3 CAP acknowledgement handlers
     async def _handle_cap(self, cap):
+        """Handle IRCv3 capability acknowledgement."""
         cap = cap.lower()
         self.active_caps.add(cap)
         if self._unhandled_caps and cap in self._unhandled_caps:
@@ -474,14 +496,15 @@ class IRC:
                 await self.finish_negotiation(cap)
 
     async def _send_initial_msgs(self):
+        """Send initial registration and capability negotiation messages."""
         if self.server_password:
             await self.quote('PASS', self.server_password, force=True)
         await self.quote('CAP LS 302', force=True)
         await self.quote('USER', self.username, '0 * :' + self.realname, force=True)
         await self.quote('NICK', self.nick, force=True)
 
-    # The main loop
     async def _async_main(self):
+        """Main loop for reading and handling IRC messages."""
         ctx = None
         if self.ssl:
             ctx = ssl.create_default_context(cafile=get_ca_certs())
@@ -533,7 +556,7 @@ class IRC:
                     raise ConnectionAbortedError
             except (asyncio.IncompleteReadError, asyncio.LimitOverrunError, asyncio.TimeoutError, OSError):
                 logger.debug(f'Connection to {self.host} lost')
-                # TODO: add logic to only reconnect if he have a successful initial connection, for now disabled auto-reconnect
+                # TODO: add logic to only reconnect if he have a successful initial connection (ie: after receiving RPL_WELCOME), for now disabled auto-reconnect
                 await self.disconnect(auto_reconnect=False)
 
                 if self.persist:

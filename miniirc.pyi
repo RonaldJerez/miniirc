@@ -3,8 +3,9 @@
 #   file slower to load.
 
 import io
+from re import Match
 from collections.abc import Callable, Iterable
-from typing import Any, Optional, Union, overload, NamedTuple, Literal
+from typing import Any, Optional, Union, overload, NamedTuple
 from asyncio import AbstractEventLoop
 
 # The version string and tuple
@@ -46,14 +47,22 @@ def Handler(*events: str) -> Callable[[_handler_func_2], _handler_func_2]: ...
 # Parse IRCv3 tags (renamed to match implementation)
 _ircv3_tag_escapes: dict[str, str] = {':': ';', 's': ' ', 'r': '\r', 'n': '\n'}
 
+def _unescape_tag(match: Match) -> str: ...
 def _tag_list_to_dict(tag_list: Iterable[str]) -> dict[str, str]: ...
 
 # Create the IRCv2/3 parser
-Hostmask = NamedTuple('Hostmask', [('nick', str), ('user', str), ('host', str)])
-IRCMessage = NamedTuple(
-    'IRCMessage',
-    [('command', str), ('hostmask', Hostmask), ('tags', dict[str, Union[str, bool]]), ('args', list[str])],
-)
+class Hostmask(NamedTuple):
+    nick: str = ''
+    user: str = ''
+    host: str = ''
+
+class IRCMessage(NamedTuple):
+    command: str
+    hostmask: Hostmask = Hostmask()
+    tags: dict | None = None
+    args: list | None = None
+
+    def sub_command(self, prefix: str) -> IRCMessage | None: ...
 
 def ircv3_message_parser(msg: str) -> IRCMessage: ...
 
