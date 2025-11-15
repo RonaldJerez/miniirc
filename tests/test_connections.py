@@ -1,77 +1,239 @@
+import ssl
 import asyncio
-import miniirc
+import logging
 import pytest
+import miniirc
+import os
 
+script_dir = os.path.dirname(__file__)
 
-@pytest.mark.asyncio
-async def test_connection():
-    irc = None
+# to be used to speed up tests by mocking asyncio.sleep
+async def mock_sleep(delay): ...
 
-    async def handle_client(reader, writer):
-        fixed_responses = {
-            'CAP LS 302': 'CAP * LS :abc sasl account-tag',
-            'CAP REQ :account-tag sasl': 'CAP miniirc-test ACK :sasl account-tag',
-            'CAP REQ :sasl account-tag': 'CAP miniirc-test ACK :account-tag sasl',
-            'AUTHENTICATE PLAIN': 'AUTHENTICATE +',
-            'AUTHENTICATE dGVzdAB0ZXN0AGh1bnRlcjI=': '903',
-            'CAP END': (
-                '001 miniirc-test_ parameter test :with colon\n'
-                '005 * CAP=END :isupport description\n'
-            ),
-            'USER test 0 * :miniirc-test':
-                ':a PRIVMSG miniirc-test :\x01VERSION\x01',
-            'NICK miniirc-test': '433',
-            'NICK miniirc-test_': '',
-            'NOTICE a :\x01VERSION ' + miniirc.version + '\x01':
-                '005 miniirc-test CTCP=VERSION :are supported by this server',
-            'QUIT :I grew sick and died.': '',
-            'SUCCESS': '',
-        }
+@pytest.fixture
+async def custom_irc_server():
+    servers = []
 
-        line = None
-        while line != 'SUCCESS':
-            line = await reader.readline()
-            line = line.decode('utf-8').rstrip('\r\n')
-            assert line in fixed_responses
+    async def start_server_with_responses(responses, *, ssl=None):
+        async def client_handler(reader, writer):
+            while True:
+                line = await reader.readline()
+                line = line.decode('utf-8').rstrip('\r\n')
 
-            response = fixed_responses[line]
-            for resp_line in response.split('\n'):
-                writer.write((resp_line + '\r\n').encode('utf-8'))
-                await writer.drain()
+                if line.startswith('QUIT'):
+                    break
 
-        writer.close()
-        await writer.wait_closed()
+                if line not in responses:
+                    logging.error(f'Received unexpected line: {line}')
+                    break
 
-    server = await asyncio.start_server(handle_client, '127.0.0.1', 0)
-    ip, port = server.sockets[0].getsockname()
+                response = responses[line]
+                if not response: continue
 
-    try:
-        irc = miniirc.IRC(ip, port, 'miniirc-test', username='test', password='hunter2', persist=False)
-        assert irc.connected is None
+                for resp_line in response.split('\n'):
+                    writer.write((resp_line + '\r\n').encode('utf-8'))
+                    await writer.drain()
+                    
+            writer.close()
+            await writer.wait_closed()
 
-        @irc.Handler('001')
-        async def _handle_001(irc, msg):
-            assert msg.args == ['miniirc-test_', 'parameter', 'test', 'with colon']
+        server = await asyncio.start_server(client_handler, 'localhost', 0, ssl=ssl)
+        servers.append(server)
+        try:
+            _, port, *rest = server.sockets[0].getsockname()
+            return port
+        except Exception as e:
+            raise e
 
-        state = {'count': 0}
+    yield start_server_with_responses
 
-        @irc.Handler('005')
-        async def _handle_005(irc):
-            state['count'] = state['count'] + 1
-            if state['count'] < 2:
-                return
-
-            assert irc.isupport == {'CTCP': 'VERSION', 'CAP': 'END'}
-            await irc.send('SUCCESS')
-
-        await irc.connect()
-
-        assert irc.nick == 'miniirc-test'
-        assert irc.current_nick == 'miniirc-test_'
-
-    finally:
-        await irc.disconnect()
+    for server in servers:
         server.close()
         await server.wait_closed()
 
-    await irc.wait_until_disconnected()
+
+class DummyIRC(miniirc.IRC):
+    def __init__(self, port, **kwargs):
+        persist = kwargs.pop('persist', False)
+        super().__init__('localhost', port, 'tester', persist=persist, **kwargs)
+
+
+base_exchange: dict = {
+    'CAP LS 302': '',
+    'USER tester 0 * :tester': '',
+    'NICK tester': (
+        '001 * arg1 arg2 :text message with space\n'
+        '005 * NETWORK=Net NICKLEN=35 :are supported by this server'
+    ),
+}
+
+ircv3_exchange = {
+    'CAP LS 302': 'CAP * LS :abc sasl account-tag',
+    'USER tester 0 * :tester': '',
+    'NICK tester': '',
+    'CAP REQ :account-tag sasl': 'CAP * ACK :sasl account-tag',
+    'CAP REQ :sasl account-tag': 'CAP * ACK :account-tag sasl',
+    'AUTHENTICATE PLAIN': 'AUTHENTICATE +',
+    'AUTHENTICATE dGVzdGVyAHRlc3RlcgBodW50ZXIy': '903',
+    'CAP END': (
+        '001 * arg :welcome to the test server\n'
+        '005 * BOT :are supported by this server\n'
+    )
+}
+
+@pytest.mark.asyncio
+@pytest.mark.filterwarnings("ignore::UserWarning")
+async def test_basic_ssl_connection(custom_irc_server):
+    server_ssl_ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    server_ssl_ctx.load_cert_chain(certfile=os.path.join(script_dir, "server.crt"), keyfile=os.path.join(script_dir, "server.key"))
+
+    client_ssl_ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+    client_ssl_ctx.load_verify_locations(cafile=os.path.join(script_dir, "server.crt")) # Trust the self-signed server certificate
+    
+    port = await custom_irc_server(base_exchange, ssl=server_ssl_ctx)
+    irc = DummyIRC(port, ssl=client_ssl_ctx, verify_ssl=False)  
+    handled = { '001': 0, '005': 0 }
+
+    @irc.Handler('001')
+    async def _handle_001(irc, msg):
+        handled[msg.command] += 1
+        assert msg.args == ['*', 'arg1', 'arg2', 'text message with space']
+
+    @irc.Handler('005')
+    async def _handle_005(irc, msg):
+        handled[msg.command] += 1
+        await irc.send('QUIT')
+
+    await irc.connect()
+    assert irc.isupport == {'NETWORK': 'Net', 'NICKLEN': 35}
+    assert handled == {'001': 1, '005': 1}
+
+
+@pytest.mark.asyncio
+async def test_multi_isupport(custom_irc_server):
+    responses = {
+        **base_exchange,
+        'USER tester 0 * :tester': 'PING :test',
+        'PONG :test': '005 * ANOTHER=Val INVALID_LEN=a35 :are supported by this server'
+    }
+
+    port = await custom_irc_server(responses)
+    irc = DummyIRC(port)
+
+    # state machine for how many isupport received
+    state = {'count': 0}
+
+    @irc.Handler('005')
+    async def _handle_005(irc, msg):
+        state['count'] += 1
+
+        # only proceed on the second 005
+        if state['count'] < 2: return
+        
+        await irc.send('QUIT')
+
+    await irc.connect()
+    assert irc.isupport == {'NETWORK': 'Net', 'NICKLEN': 35, 'ANOTHER': 'Val'}
+    assert state['count'] == 2
+
+
+@pytest.mark.asyncio
+async def test_sasl(custom_irc_server):
+    port = await custom_irc_server(ircv3_exchange)
+    irc = DummyIRC(port, password='hunter2')
+
+    @irc.Handler('005')
+    async def _handle_005(irc):
+        await irc.send('QUIT')
+
+    await irc.connect()
+    assert irc.username == 'tester'
+    assert irc.current_nick == 'tester'
+    assert 'BOT' in irc.isupport
+    
+
+@pytest.mark.asyncio
+async def test_reconnect_attempts(caplog, monkeypatch):
+    monkeypatch.setattr('asyncio.sleep', mock_sleep)
+  
+    # TODO use logic to find an actual used port
+    irc = DummyIRC(7890, max_reconnect_attempts=3, persist=True)    
+    handled = { '001': 0 }
+
+    @irc.Handler('001')
+    async def _handle_001(irc, msg):
+        handled[msg.command] += 1
+        await irc.send('QUIT')
+
+    await irc.connect()
+    assert 'Failed to connect after 3 attempts' in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_reconnecting(custom_irc_server, monkeypatch):
+    monkeypatch.setattr('asyncio.sleep', mock_sleep)
+
+    port = await custom_irc_server(base_exchange)
+    irc = DummyIRC(port, max_reconnect_attempts=3, persist=True)    
+    handled = { '001': 0 }
+
+    @irc.Handler('001')
+    async def _handle_001(irc, msg):
+        handled[msg.command] += 1
+
+        # allow to test to quit after 3 successful reconnections
+        if handled[msg.command] > 2:
+            irc.persist = False
+
+        await irc.send('QUIT')
+
+    await irc.connect()
+    assert handled == {'001': 3}
+
+@pytest.mark.asyncio
+async def test_wait_until_disconnected(custom_irc_server, monkeypatch):
+    monkeypatch.setattr('asyncio.sleep', mock_sleep)
+
+    port = await custom_irc_server(base_exchange)
+    bot1 = DummyIRC(port)
+    bot2 = DummyIRC(port)
+
+    handled = { '001': 0 }
+
+    @miniirc.Handler('001')
+    async def _handle_001(irc, msg):
+        handled[msg.command] += 1
+        await irc.send('QUIT')
+
+    asyncio.create_task(bot1.connect())
+    asyncio.create_task(bot2.connect())
+
+    await asyncio.gather(bot1.wait_until_disconnected(), bot2.wait_until_disconnected())
+    assert handled == {'001': 2}
+
+
+@pytest.mark.asyncio
+async def test_invalid_nickname(custom_irc_server):
+    responses = {
+        **base_exchange,
+        'NICK tester': '433',
+        'NICK tester_': (
+            '001 * arg1 arg2 :text message with space\n'
+            '005 * NETWORK=Net NICKLEN=35 :are supported by this server'
+        ),
+    }
+    port = await custom_irc_server(responses)
+    irc = DummyIRC(port)    
+
+    @irc.Handler('005')
+    async def _handle_005(irc, msg):
+        await irc.send('QUIT')
+
+    await irc.connect()
+    assert irc.current_nick == 'tester_'
+
+
+
+
+# TODO test handled commands
+

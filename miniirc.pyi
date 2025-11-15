@@ -2,7 +2,7 @@
 # This allows type checking without breaking compatibility or making the main
 #   file slower to load.
 
-import io
+import io, ssl
 from re import Match
 from collections.abc import Callable, Iterable
 from typing import Any, Optional, Union, overload, NamedTuple
@@ -130,6 +130,11 @@ class IRC:
     # The connect function
     async def connect(self, *, loop: Optional[Any] = None) -> None: ...
 
+    def _create_ssl_context(self) -> ssl.SSLContext: ...
+    def _establish_connection(self, ctx: ssl.SSLContext) -> None: ...
+    def _process_line(self, line: str) -> None: ...
+    def debug_print_line(self, line: str) -> None: ...
+
     # An easier way to disconnect
     async def disconnect(self, msg: Optional[str] = None, *, auto_reconnect: bool = False) -> None: ...
 
@@ -147,7 +152,7 @@ class IRC:
         nick: str,
         *,
         channels: Optional[Union[Iterable[str], str]] = None,
-        ssl: Optional[bool] = None,
+        ssl: Optional[Union[bool, ssl.SSLContext]] = None,
         username: Optional[str] = None,
         realname: Optional[str] = None,
         persist: bool = True,
@@ -157,6 +162,7 @@ class IRC:
         ping_timeout: Optional[int] = None,
         verify_ssl: bool = True,
         server_password: Optional[str] = None,
+        max_reconnect_attempts: int = 10
     ) -> None: ...
 
     async def wait_until_disconnected(self) -> None: ...
