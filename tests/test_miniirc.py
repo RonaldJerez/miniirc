@@ -5,9 +5,13 @@ import collections
 import pathlib
 from miniirc import IRCMessage, Hostmask
 
+class DummyIRC(miniirc.IRC):
+    def __init__(self, ip='', port=0, nick='a', *args, **kwargs):
+        super().__init__(ip, port, nick, *args, **kwargs)
 
 def test_message_parser():
-    p = miniirc.ircv3_message_parser
+    irc = DummyIRC()
+    p = irc.message_parser
     for i in range(4):
         hostmask = Hostmask(*('n', 'u', 'h')[:i])
         hostmask_s = ':n!u@h'[: i * 2] + (' ' if i else '')
@@ -40,11 +44,6 @@ def test_dict_to_tags():
     dict_to_tags = miniirc._dict_to_tags
     tags_dict = collections.OrderedDict((('abc', True), ('def', False), ('ghi', ''), ('jkl', 'test\r\n; ')))
     assert dict_to_tags(tags_dict) == rb'@abc;jkl=test\r\n\:\s '
-
-
-class DummyIRC(miniirc.IRC):
-    def __init__(self, ip='', port=0, nick='a', *args, **kwargs):
-        super().__init__(ip, port, nick, *args, **kwargs)
 
 
 class IRCQuoteWrapper(DummyIRC):
@@ -87,16 +86,6 @@ async def test_irc_msg_funcs():
             fmt.format('target', 'hello world'),
             {'abc': 'def'},
         )
-
-
-def test_change_parser():
-    irc = DummyIRC()
-    assert irc._parse == miniirc.ircv3_message_parser
-
-    def f(msg): ...
-
-    irc.change_parser(f)
-    assert irc._parse == f
 
 
 def test_get_ca_certs():

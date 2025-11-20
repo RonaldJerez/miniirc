@@ -94,12 +94,12 @@ async def test_basic_ssl_connection(custom_irc_server):
     irc = DummyIRC(port, ssl=client_ssl_ctx, verify_ssl=False)  
     handled = { '001': 0, '005': 0 }
 
-    @irc.Handler('001')
+    @irc.handle('001')
     async def _handle_001(irc, msg):
         handled[msg.command] += 1
         assert msg.args == ['*', 'arg1', 'arg2', 'text message with space']
 
-    @irc.Handler('005')
+    @irc.handle('005')
     async def _handle_005(irc, msg):
         handled[msg.command] += 1
         await irc.send('QUIT')
@@ -123,7 +123,7 @@ async def test_multi_isupport(custom_irc_server):
     # state machine for how many isupport received
     state = {'count': 0}
 
-    @irc.Handler('005')
+    @irc.handle('005')
     async def _handle_005(irc, msg):
         state['count'] += 1
 
@@ -142,7 +142,7 @@ async def test_sasl(custom_irc_server):
     port = await custom_irc_server(ircv3_exchange)
     irc = DummyIRC(port, password='hunter2')
 
-    @irc.Handler('005')
+    @irc.handle('005')
     async def _handle_005(irc):
         await irc.send('QUIT')
 
@@ -160,7 +160,7 @@ async def test_reconnect_attempts(caplog, monkeypatch):
     irc = DummyIRC(7890, max_reconnect_attempts=3, persist=True)    
     handled = { '001': 0 }
 
-    @irc.Handler('001')
+    @irc.handle('001')
     async def _handle_001(irc, msg):
         handled[msg.command] += 1
         await irc.send('QUIT')
@@ -177,7 +177,7 @@ async def test_reconnecting(custom_irc_server, monkeypatch):
     irc = DummyIRC(port, max_reconnect_attempts=3, persist=True)    
     handled = { '001': 0 }
 
-    @irc.Handler('001')
+    @irc.handle('001')
     async def _handle_001(irc, msg):
         handled[msg.command] += 1
 
@@ -200,7 +200,7 @@ async def test_wait_until_disconnected(custom_irc_server, monkeypatch):
 
     handled = { '001': 0 }
 
-    @miniirc.Handler('001')
+    @miniirc.handle('001')
     async def _handle_001(irc, msg):
         handled[msg.command] += 1
         await irc.send('QUIT')
@@ -225,7 +225,7 @@ async def test_invalid_nickname(custom_irc_server):
     port = await custom_irc_server(responses)
     irc = DummyIRC(port)    
 
-    @irc.Handler('005')
+    @irc.handle('005')
     async def _handle_005(irc, msg):
         await irc.send('QUIT')
 
@@ -247,7 +247,7 @@ async def test_nickname_length(custom_irc_server):
 
     handled = { '001': 0 }
 
-    @irc.Handler('001')
+    @irc.handle('001')
     async def _handle_001(irc, msg):
         handled[msg.command] += 1
 

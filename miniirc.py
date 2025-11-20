@@ -58,14 +58,11 @@ _IRC_NUMERICS = {
     'ERR_SASLABORTED': '905',
 }
 
-
-# Allow consumers to register additional numeric mappings
 def register_numerics(numerics):
     """
     Register additional IRC numeric replies.
     """
     _IRC_NUMERICS.update(numerics)
-
 
 def _event_name_to_numeric(event):
     """Convert event name to its numeric value if applicable"""
@@ -73,49 +70,6 @@ def _event_name_to_numeric(event):
         return None
     event = str(event).upper()
     return _IRC_NUMERICS.get(event, event)
-
-
-# Create global handlers
-_global_handlers = {}
-
-
-class _Handler:
-    """Internal handler wrapper for IRC event callbacks."""
-    __slots__ = ('func', 'awaitable', 'params_count')
-
-    def __init__(self, func):
-        self.func = func
-        self.awaitable = asyncio.iscoroutinefunction(func)
-
-        signature = inspect.signature(func)
-        self.params_count = len(signature.parameters.keys())
-
-        if self.params_count > 2:
-            raise TypeError(f'Handler only accepts 2 params, got {self.params_count}')
-
-
-def _add_handler(handlers, events):
-    """Decorator to add a handler for one or more IRC events."""
-    if not events:
-        raise TypeError('Handler() called without arguments.')
-
-    def add_handler(func):
-        handler = _Handler(func)
-        for event in events:
-            event = _event_name_to_numeric(event)
-            if event not in handlers:
-                handlers[event] = []
-            if handler not in handlers[event]:
-                handlers[event].append(handler)
-        return func
-
-    return add_handler
-
-
-def Handler(*events):
-    """Decorator to register a global handler for IRC events."""
-    return _add_handler(_global_handlers, events)
-
 
 # Parse IRCv3 tags
 _ircv3_tag_escapes = {':': ';', 's': ' ', 'r': '\r', 'n': '\n'}
@@ -138,8 +92,72 @@ def _tag_list_to_dict(tag_list):
 
     return tags
 
+def _escape_tag(tag):
+    """Escape a tag value for IRCv3 message tags."""
+    tag = str(tag).replace('\\', '\\\\')
+    for i in _ircv3_tag_escapes:
+        tag = tag.replace(_ircv3_tag_escapes[i], '\\' + i)
+    return tag
 
-# Create the IRCv2/3 parser
+def _dict_to_tags(tags):
+    """Convert a dictionary of tags to an IRCv3 tag string."""
+    res = b'@'
+    for tag, value in tags.items():
+        if value and value != '':
+            etag = _escape_tag(tag).replace('=', '-')
+            if value and isinstance(value, str):
+                etag += '=' + _escape_tag(value)
+            etag = (etag + ';').encode('utf-8')
+            if len(res) + len(etag) > 4094:
+                break
+            res += etag
+    if len(res) < 3:
+        return b''
+    return res[:-1] + b' '
+
+
+class Handler:
+    """Internal handler wrapper for IRC event callbacks."""
+    __slots__ = ('func', 'awaitable', 'params_count')
+
+    def __init__(self, func):
+        self.func = func
+        self.awaitable = asyncio.iscoroutinefunction(func)
+
+        signature = inspect.signature(func)
+        self.params_count = len(signature.parameters.keys())
+
+        if self.params_count > 2:
+            raise TypeError(f'Handler only accepts 2 params, got {self.params_count}')
+
+
+class HandlersCollection:
+    """Handler decorator and manager for IRC events."""
+    
+    def __init__(self):
+        self.handlers = {}
+    
+    def __call__(self, *events):
+        """Decorator to add a handler for one or more IRC events."""
+        if not events:
+            raise TypeError('Handler() called without arguments.')
+
+        def wrapper(func):
+            handler = Handler(func)
+            for event in events:
+                event = _event_name_to_numeric(event)
+                if event not in self.handlers:
+                    self.handlers[event] = []
+                if handler not in self.handlers[event]:
+                    self.handlers[event].append(handler)
+            return func
+
+        return wrapper
+    
+    def getHandlers(self):
+        return self.handlers
+
+
 class Hostmask(NamedTuple):
     """Represents an IRC hostmask (nick!user@host)."""
     nick: str = ''
@@ -160,9 +178,9 @@ class IRCMessage(NamedTuple):
 
         Example:
             msg = IRCMessage('PRIVMSG', ..., args=['#chan', '\x01ACTION waves\x01'])
-            sub = msg.sub_command('CTCP')
-            # sub.command == 'CTCP ACTION'
-            # sub.args == ['#chan', 'waves']
+            sub = msg.sub_command('CTCP')<br>
+            sub.command == 'CTCP ACTION'
+            sub.args == ['#chan', 'waves']
         """
         target, text = self.args
 
@@ -178,66 +196,41 @@ class IRCMessage(NamedTuple):
         new_args.insert(0, target)
 
         return self._replace(command=new_command, args=new_args)
+    
+    def handle(self, irc):
+        """Dispatch a parsed IRC message to registered handlers."""
+        ctcp_msg = None
+        handled = False
+        input_command = self.command.upper()
 
+        if input_command in ('PRIVMSG', 'NOTICE') and self.args:
+            text = self.args[-1]
+            if len(text) > 2 and text.startswith('\x01') and text.endswith('\x01'):
+                ctcp_msg = self.sub_command('CTCP')
 
-_msg_re = re.compile(
-    r'^'
-    r'(?:@([^ ]*) )?'  # Tags
-    r'(?::([^!@ ]*)(?:!([^@ ]*))?(?:@([^ ]*))? )?'  # Hostmask
-    r'([^@: ][^ ]*)(?: (.*?))??(?: :(.*))?'  # Command and arguments
-    r'$'
-)
+        msg = ctcp_msg or self
+        msg_command = msg.command.upper()
+        combined_handlers = irc.get_combined_handlers()
+        
+        handlers = combined_handlers.get(msg_command, []) + combined_handlers.get(None, [])
+        if len(handlers) > 0:
+            handled = True
+            for handler in handlers:
+                asyncio.create_task(msg._start_handler(handler, irc))
 
-
-def ircv3_message_parser(msg):
-    """Parse a raw IRC message string into an IRCMessage object."""
-    match = _msg_re.match(msg)
-    if not match:
-        return
-
-    # Process IRCv3 tags
-    raw_tags = match.group(1)
-    tags = {} if raw_tags is None else _tag_list_to_dict(raw_tags.split(';'))
-
-    # Process arguments
-    hostmask = Hostmask(*match.groups('')[1:4])
-    cmd = match.group(5)
-
-    # Get the command and arguments
-    raw_args = match.group(6)
-    args = [] if raw_args is None else raw_args.split(' ')
-
-    trailing = match.group(7)
-    if trailing:
-        args.append(trailing)
-
-    # Return the parsed data
-    return IRCMessage(cmd, hostmask, tags, args)
-
-
-def _escape_tag(tag):
-    """Escape a tag value for IRCv3 message tags."""
-    tag = str(tag).replace('\\', '\\\\')
-    for i in _ircv3_tag_escapes:
-        tag = tag.replace(_ircv3_tag_escapes[i], '\\' + i)
-    return tag
-
-
-def _dict_to_tags(tags):
-    """Convert a dictionary of tags to an IRCv3 tag string."""
-    res = b'@'
-    for tag, value in tags.items():
-        if value and value != '':
-            etag = _escape_tag(tag).replace('=', '-')
-            if value and isinstance(value, str):
-                etag += '=' + _escape_tag(value)
-            etag = (etag + ';').encode('utf-8')
-            if len(res) + len(etag) > 4094:
-                break
-            res += etag
-    if len(res) < 3:
-        return b''
-    return res[:-1] + b' '
+        return handled
+    
+    async def _start_handler(self, handler, irc):
+        """Start a handler for a given message, running async or in executor."""
+        try:
+            params = (irc, self)
+            if handler.awaitable:
+                await handler.func(*params[: handler.params_count])
+            else:
+                # Run non-async handlers in the event loop's default executor
+                await irc._loop.run_in_executor(None, handler.func, *params[: handler.params_count])
+        except Exception as e:
+            logger.exception(f'Handler {handler.func.__name__} raised an exception: {e}')
 
 
 class IRC:
@@ -253,6 +246,13 @@ class IRC:
     _combined_handlers = None
     _task = None
     _nickname_re = re.compile(r'^(?![\d-])[\w`^|{}[\]\-\\]+$')
+    _msg_re = re.compile(
+        r'^'
+        r'(?:@([^ ]*) )?'  # Tags
+        r'(?::([^!@ ]*)(?:!([^@ ]*))?(?:@([^ ]*))? )?'  # Hostmask
+        r'([^@: ][^ ]*)(?: (.*?))??(?: :(.*))?'  # Command and arguments
+        r'$'
+    )
 
     def __init__(self, host, port, nick, *, 
                  channels=None,
@@ -294,9 +294,8 @@ class IRC:
         if self.password:
             self.ircv3_caps.add('sasl')
 
-        # Add handlers and set the default message parser
-        self.change_parser()
-        self._instance_handlers = {}
+        # Add instance handlers
+        self.handle = HandlersCollection()
 
         # Try to detect ssl
         if ssl is None and self.port == 6697:
@@ -377,10 +376,6 @@ class IRC:
         """Send a CTCP ACTION (/me) to a target."""
         await self.ctcp(target, 'ACTION', msg, tags=tags)
 
-    def Handler(self, *events):
-        """Register a handler for this IRC instance."""
-        return _add_handler(self._instance_handlers, events)
-
     async def connect(self, *, loop=None):
         """
         Connect to the IRC server and start the main loop.
@@ -450,49 +445,44 @@ class IRC:
                 if not self.connected:
                     await self.send('CAP END', force=True)
 
-    def change_parser(self, parser=ircv3_message_parser):
-        """Change the message parser used for incoming messages."""
-        self._parse = parser
+    def message_parser(self, msg):
+        """Parse a raw IRC message string into an IRCMessage object."""
+        match = self._msg_re.match(msg)
+        if not match:
+            return
 
-    async def _start_handler(self, handler, msg):
-        """Start a handler for a given message, running async or in executor."""
-        try:
-            params = (self, msg)
-            if handler.awaitable:
-                await handler.func(*params[: handler.params_count])
-            else:
-                # Run non-async handlers in the event loop's default executor
-                await self._loop.run_in_executor(None, handler.func, *params[: handler.params_count])
-        except Exception as e:
-            logger.exception(f'Handler {handler.func.__name__} raised an exception: {e}')
+        # Process IRCv3 tags
+        raw_tags = match.group(1)
+        tags = {} if raw_tags is None else _tag_list_to_dict(raw_tags.split(';'))
 
-    def handle_msg(self, input_msg):
-        """Dispatch a parsed IRC message to registered handlers."""
-        ctcp_msg = None
-        handled = False
-        input_command = input_msg.command.upper()
+        # Process arguments
+        hostmask = Hostmask(*match.groups('')[1:4])
+        cmd = match.group(5)
 
-        if input_command in ('PRIVMSG', 'NOTICE') and input_msg.args:
-            text = input_msg.args[-1]
-            if len(text) > 2 and text.startswith('\x01') and text.endswith('\x01'):
-                ctcp_msg = input_msg.sub_command('CTCP')
+        # Get the command and arguments
+        raw_args = match.group(6)
+        args = [] if raw_args is None else raw_args.split(' ')
 
-        msg = ctcp_msg or input_msg
-        msg_command = msg.command.upper()
+        trailing = match.group(7)
+        if trailing:
+            args.append(trailing)
+
+        # Return the parsed data
+        return IRCMessage(cmd, hostmask, tags, args)
+
+    def get_combined_handlers(self):
+        """Get combined global and instance-specific handlers."""
 
         # do this loop only once per instance, there shouldn't be any new handlers post init
         if self._combined_handlers is None:
             self._combined_handlers = {}
-            for key in set(_global_handlers) | set(self._instance_handlers):
-                self._combined_handlers[key] = _global_handlers.get(key, []) + self._instance_handlers.get(key, [])
+            global_handlers = handle.getHandlers()
+            instance_handlers = self.handle.getHandlers()
 
-        handlers = self._combined_handlers.get(msg_command, []) + self._combined_handlers.get(None, [])
-        if len(handlers) > 0:
-            handled = True
-            for handler in handlers:
-                asyncio.create_task(self._start_handler(handler, msg))
+            for key in set(global_handlers) | set(instance_handlers):
+                self._combined_handlers[key] = global_handlers.get(key, []) + instance_handlers.get(key, [])
 
-        return handled
+        return self._combined_handlers
 
     async def _handle_cap(self, cap):
         """Handle IRCv3 capability acknowledgement."""
@@ -500,7 +490,7 @@ class IRC:
         self.active_caps.add(cap)
         if self._unhandled_caps and cap in self._unhandled_caps:
             msg = IRCMessage(f'CAP ACK {cap}', args=self._unhandled_caps[cap])
-            handled = self.handle_msg(msg)
+            handled = msg.handle(self)
             if not handled:
                 await self.finish_negotiation(cap)
 
@@ -574,9 +564,9 @@ class IRC:
         self.debug_print_line(line_str)
 
         try:
-            msg = self._parse(line_str)
+            msg = self.message_parser(line_str)
             if isinstance(msg, IRCMessage):
-                self.handle_msg(msg)
+                msg.handle(self)
             else:
                 logger.debug(f'Ignored message: {line_str}')
         except Exception as exc:
@@ -647,9 +637,11 @@ class IRC:
         self.current_nick += '_'
         return self.current_nick
 
+# Create global handler instance
+handle = HandlersCollection()
 
 # Handle some IRC messages by default.
-@Handler('RPL_WELCOME')
+@handle('RPL_WELCOME')
 async def _handler(irc):
     irc.connected = True
     irc.isupport.clear()
@@ -673,18 +665,18 @@ async def _handler(irc):
             await irc.send(*args, tags=tags)
 
 
-@Handler('PING')
+@handle('PING')
 async def _handler(irc, msg):
     await irc.command('PONG', *msg.args, force=True)
 
 
-@Handler('PONG')
+@handle('PONG')
 async def _handler(irc, msg):
     if msg.args and msg.args[-1] == 'miniirc-ping' and irc.ping_interval:
         irc._pinged = False
 
 
-@Handler('ERR_ERRONEUSNICKNAME', 'ERR_NICKNAMEINUSE')
+@handle('ERR_ERRONEUSNICKNAME', 'ERR_NICKNAMEINUSE')
 async def _handler(irc, msg):
     if not irc.connected:
         logger.info(f'{msg.command}: The requested nickname "{irc.current_nick}" is invalid or in use.')
@@ -703,42 +695,42 @@ async def _handler(irc, msg):
 
 
 # Server changed our nickname?
-@Handler('NICK')
+@handle('NICK')
 async def _handler(irc, msg):
     if msg.hostmask.nick.lower() == irc.current_nick.lower():
         irc.current_nick = msg.args[-1]
 
 
-@Handler('CTCP VERSION')
+@handle('CTCP VERSION')
 async def _handler(irc, msg):
     if not version:
         return
     await irc.ctcp(msg.hostmask.nick, 'VERSION', version, reply=True)
 
 
-@Handler('CAP')
+@handle('CAP')
 async def _handler(irc, msg):
     if len(msg.args) < 3:
         return
 
     msg = IRCMessage(f'CAP {msg.args[1]}', msg.hostmask, args=msg.args)
-    irc.handle_msg(msg)
+    msg.handle(irc)
 
 
-@Handler('CAP ACK')
+@handle('CAP ACK')
 async def _handler(irc, msg):
     caps = msg.args[-1].split(' ')
     for cap in caps:
         await irc._handle_cap(cap)
 
 
-@Handler('CAP NAK')
+@handle('CAP NAK')
 async def _handler(irc):
     irc._unhandled_caps = None
     await irc.send('CAP END', force=True)
 
 
-@Handler('CAP LS', 'CAP NEW')
+@handle('CAP LS', 'CAP NEW')
 async def _handler(irc, msg):
     req = set()
 
@@ -767,7 +759,7 @@ async def _handler(irc, msg):
         await irc.send('CAP END', force=True)
 
 
-@Handler('CAP DEL')
+@handle('CAP DEL')
 async def _handler(irc, msg):
     caps = msg.args[-1].split(' ')
 
@@ -777,7 +769,7 @@ async def _handler(irc, msg):
             irc.active_caps.remove(cap)
 
 
-@Handler('CAP ACK SASL')
+@handle('CAP ACK SASL')
 async def _handler(irc, msg):
     sasl_options = msg.args[-1].upper().split(',')
     if irc.password and (len(msg.args) < 2 or 'PLAIN' in sasl_options):
@@ -787,7 +779,7 @@ async def _handler(irc, msg):
         await irc.finish_negotiation('sasl')
 
 
-@Handler('AUTHENTICATE')
+@handle('AUTHENTICATE')
 async def _handler(irc, msg):
     if msg.args and msg.args[0] == '+':
         irc._sasl = True
@@ -795,7 +787,7 @@ async def _handler(irc, msg):
         await irc.send('AUTHENTICATE', b64encode(pw).decode('utf-8'), force=True)
 
 
-@Handler('ERR_SASLFAIL', 'ERR_SASLABORTED')
+@handle('ERR_SASLFAIL', 'ERR_SASLABORTED')
 async def _handler(irc):
     if irc._sasl:
         irc._sasl = False
@@ -803,12 +795,12 @@ async def _handler(irc):
         await irc.send('AUTHENTICATE *', force=True)
 
 
-@Handler('ERR_NICKLOCKED', 'RPL_SASLSUCCESS', 'ERR_SASLFAIL', 'ERR_SASLABORTED')
+@handle('ERR_NICKLOCKED', 'RPL_SASLSUCCESS', 'ERR_SASLFAIL', 'ERR_SASLABORTED')
 async def _handler(irc):
     await irc.finish_negotiation('sasl')
 
 
-@Handler('CAP ACK STS')
+@handle('CAP ACK STS')
 async def _handler(irc, msg):
     if not irc.ssl and len(msg.args) == 2:
         try:
@@ -828,7 +820,7 @@ async def _handler(irc, msg):
         await irc.finish_negotiation('sts')
 
 
-@Handler('RPL_ISUPPORT')
+@handle('RPL_ISUPPORT')
 async def _handler(irc, msg):
     isupport = _tag_list_to_dict(msg.args[1:-1])
 

@@ -14,7 +14,7 @@ version: str = ...
 __version__: str = ...
 
 # __all__ and _default_caps
-__all__: list[str] = ['Handler', 'IRC', 'IRCMessage', 'Hostmask', 'register_numerics']
+__all__: list[str] = ['Handler', 'IRC', 'IRCMessage', 'Hostmask', 'register_numerics', 'HandlersCollection']
 _default_caps: set[str] = {
     'account-notify',
     'account-tag',
@@ -39,10 +39,26 @@ except ImportError:
 _handler_func_1 = Callable[['IRC'], Any]
 _handler_func_2 = Callable[['IRC', 'IRCMessage'], Any]
 
+class Handler:
+    """Internal handler wrapper for IRC event callbacks."""
+    func: Any
+    awaitable: bool
+    params_count: int
+    def __init__(self, func: Callable) -> None: ...
+
+class HandlersCollection:
+    """Handler decorator and manager for IRC events."""
+    handlers: dict[str, list[Handler]]
+    def __init__(self) -> None: ...
+    def __call__(self, *events: str) -> Callable[[Any], Any]: ...
+    def getHandlers(self) -> dict[str, list[Handler]]: ...
+
+handle: HandlersCollection
+
 @overload
-def Handler(*events: str) -> Callable[[_handler_func_1], _handler_func_1]: ...
+def handle(*events: str) -> Callable[[_handler_func_1], _handler_func_1]: ...
 @overload
-def Handler(*events: str) -> Callable[[_handler_func_2], _handler_func_2]: ...
+def handle(*events: str) -> Callable[[_handler_func_2], _handler_func_2]: ...
 
 # Parse IRCv3 tags (renamed to match implementation)
 _ircv3_tag_escapes: dict[str, str] = {':': ';', 's': ' ', 'r': '\r', 'n': '\n'}
@@ -62,9 +78,9 @@ class IRCMessage(NamedTuple):
     tags: dict | None = None
     args: list | None = None
 
-    def sub_command(self, prefix: str) -> IRCMessage | None: ...
-
-def ircv3_message_parser(msg: str) -> IRCMessage: ...
+    def sub_command(self, prefix: str) -> "IRCMessage | None": ...
+    def handle(self, irc: "IRC") -> bool: ...
+    async def _start_handler(self, handler: Any, irc: "IRC") -> None: ...
 
 # Escape tags
 def _escape_tag(tag: str) -> str: ...
@@ -86,6 +102,7 @@ class IRC:
     channels: set[str]
     username: str
     realname: str
+    password: Optional[str]
     ssl: Optional[bool]
     persist: bool
     ircv3_caps: set[str]
@@ -97,6 +114,7 @@ class IRC:
     ping_timeout: Optional[int]
     verify_ssl: bool
     server_password: Optional[str]
+    max_reconnect_attempts: int
 
     # Internal runtime attrs
     _sendq: Optional[list[Any]]
@@ -104,45 +122,46 @@ class IRC:
     _task: Optional[Any]
     _sasl: bool
     _unhandled_caps: Optional[dict[str, Any]]
+    _combined_handlers: Optional[dict[str, list[Any]]]
+    _nickname_re: Any
+    _msg_re: Any
 
-    # Send raw messages
+    handle: HandlersCollection
+
     async def quote(
         self, *msg: str, force: bool = False, tags: Optional[dict[str, Union[str, bool]]] = None
     ) -> None: ...
     async def send(
+        self, *msg: str, force: bool = False, tags: Optional[dict[str, Union[str, bool]]] = None
+    ) -> None: ...
+    async def command(
         self, command: str, *args: str, force: bool = False, tags: Optional[dict[str, Union[str, bool]]] = None
     ) -> None: ...
-
-    # User-friendly msg, notice, and ctcp functions.
-    async def msg(self, target: str, *msg: str, tags: Optional[dict[str, Union[str, bool]]] = None) -> None: ...
-    async def notice(self, target: str, *msg: str, tags: Optional[dict[str, Union[str, bool]]] = None) -> None: ...
+    async def msg(self, target: str, msg: str, tags: Optional[dict[str, Union[str, bool]]] = None) -> None: ...
+    async def notice(self, target: str, msg: str, tags: Optional[dict[str, Union[str, bool]]] = None) -> None: ...
     async def ctcp(
         self, target: str, *msg: str, reply: bool = False, tags: Optional[dict[str, Union[str, bool]]] = None
     ) -> None: ...
-    async def me(self, target: str, *msg: str, tags: Optional[dict[str, Union[str, bool]]] = None) -> None: ...
+    async def me(self, target: str, msg: str, tags: Optional[dict[str, Union[str, bool]]] = None) -> None: ...
 
-    # Allow per-connection handlers
     @overload
     def Handler(*events: str) -> Callable[[_handler_func_1], _handler_func_1]: ...
     @overload
     def Handler(*events: str) -> Callable[[_handler_func_2], _handler_func_2]: ...
 
-    # The connect function
     async def connect(self, *, loop: Optional[Any] = None) -> None: ...
 
     def _create_ssl_context(self) -> ssl.SSLContext: ...
-    def _establish_connection(self, ctx: ssl.SSLContext) -> None: ...
-    def _process_line(self, line: str) -> None: ...
+    async def _establish_connection(self, ctx: ssl.SSLContext) -> None: ...
+    async def _process_line(self, line: str) -> None: ...
     def debug_print_line(self, line: str) -> None: ...
-
-    # An easier way to disconnect
     async def disconnect(self, msg: Optional[str] = None, *, auto_reconnect: bool = False) -> None: ...
-
-    # Finish capability negotiation
     async def finish_negotiation(self, cap: str) -> None: ...
-
-    # Change the message parser
-    def change_parser(self, parser: Callable[[str], IRCMessage] = ircv3_message_parser) -> None: ...
+    def message_parser(self, msg: str) -> IRCMessage | None: ...
+    def get_combined_handlers(self) -> dict[str, list[Any]]: ...
+    async def wait_until_disconnected(self) -> None: ...
+    def on_disconnect(self) -> None: ...
+    def alter_nickname(self) -> str: ...
 
     # Initialize the class
     def __init__(
@@ -152,17 +171,16 @@ class IRC:
         nick: str,
         *,
         channels: Optional[Union[Iterable[str], str]] = None,
-        ssl: Optional[Union[bool, ssl.SSLContext]] = None,
         username: Optional[str] = None,
         realname: Optional[str] = None,
+        password: Optional[str] = None,
+        server_password: Optional[str] = None,
         persist: bool = True,
+        ssl: Optional[Union[bool, ssl.SSLContext]] = None,
+        verify_ssl: bool = True,
         ircv3_caps: Optional[set[str]] = None,
         connect_modes: Optional[str] = None,
         ping_interval: int = 60,
         ping_timeout: Optional[int] = None,
-        verify_ssl: bool = True,
-        server_password: Optional[str] = None,
         max_reconnect_attempts: int = 10
     ) -> None: ...
-
-    async def wait_until_disconnected(self) -> None: ...

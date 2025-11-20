@@ -7,24 +7,21 @@ from miniirc import IRCMessage, Hostmask
 class DummyIRC(miniirc.IRC):
     def __init__(self):
         super().__init__('localhost', 6697, 'tester')
-
-    # ensure we have a loop since we wont be calling connect
-    def handle_msg(self, input_msg):
         loop = asyncio.get_event_loop()
         self._loop = loop
-        super().handle_msg(input_msg)
 
 
 def verify_handler(event):
-    handler = miniirc._global_handlers[event][-1]
+    handlers = miniirc.handle.getHandlers()
+    handler = handlers[event][-1]
     assert handler.awaitable
 
 
-def test_Handler():
+def test_adding_handlers():
     try:
-        tmp, miniirc._global_handlers = miniirc._global_handlers, {}
+        tmp, miniirc.handle.handlers = miniirc.handle.handlers, {}
 
-        @miniirc.Handler('test', '1')
+        @miniirc.handle('test', '1')
         async def f(irc, msg): ...
 
         verify_handler('TEST')
@@ -35,45 +32,45 @@ def test_Handler():
             '1': [f],
         }
 
-        assert miniirc._global_handlers.keys() == expected.keys()
+        assert miniirc.handle.handlers.keys() == expected.keys()
 
     finally:
-        miniirc._global_handlers = tmp
+        miniirc.handle.handlers = tmp
 
 
 def test_handler_signatures():
     try:
-        tmp, miniirc._global_handlers = miniirc._global_handlers, {}
+        tmp, miniirc.handle.handlers = miniirc.handle.handlers, {}
 
         # Test simple handler with no args
-        @miniirc.Handler('TEST1')
+        @miniirc.handle('TEST1')
         async def handler1(): ...
 
-        handler = miniirc._global_handlers['TEST1'][-1]
+        handler = miniirc.handle.handlers['TEST1'][-1]
         assert handler.params_count == 0
 
         # Test handler with single parameter
-        @miniirc.Handler('TEST2')
+        @miniirc.handle('TEST2')
         async def handler2(irc): ...
 
-        handler = miniirc._global_handlers['TEST2'][-1]
+        handler = miniirc.handle.handlers['TEST2'][-1]
         assert handler.params_count == 1
 
         # Test handler with all parameters
-        @miniirc.Handler('TEST3')
+        @miniirc.handle('TEST3')
         async def handler4(irc, msg): ...
 
-        handler = miniirc._global_handlers['TEST3'][-1]
+        handler = miniirc.handle.handlers['TEST3'][-1]
         assert handler.params_count == 2
 
         # should raise if too many params
         with pytest.raises(TypeError):
 
-            @miniirc.Handler('TEST6')
+            @miniirc.handle('TEST6')
             async def handler_wrong3(irc, msg, tt): ...
 
     finally:
-        miniirc._global_handlers = tmp
+        miniirc.handle.handlers = tmp
 
 
 @pytest.mark.asyncio
@@ -81,20 +78,20 @@ async def test_handler_execution():
     irc = DummyIRC()
     results = []
 
-    @irc.Handler('TEST')
+    @irc.handle('TEST')
     async def handler1(irc, msg):
         results.append(('handler1', msg.args))
 
-    @irc.Handler('TEST')
+    @irc.handle('TEST')
     async def handler2(irc, msg):
         results.append(('handler2', msg.command, msg.args))
 
-    @irc.Handler('TEST')
+    @irc.handle('TEST')
     async def handler3(irc, msg):
         results.append(('handler3', msg.command, msg.hostmask, msg.tags, msg.args))
 
     msg = IRCMessage('TEST', Hostmask('nick', 'user', 'host'), {'tag': 'value'}, ['arg1', 'arg2'])
-    irc.handle_msg(msg)
+    msg.handle(irc)
 
     # await for fire/forget handle_msg
     await asyncio.sleep(0.01)
@@ -111,8 +108,8 @@ async def test_ctcp_handlers():
     irc = DummyIRC()
     called = {'PRIVMSG': 0, 'CTCP': 0}
 
-    @irc.Handler('PRIVMSG', 'CTCP VERSION', 'CTCP ACTION')
-    def handle_all(irc, msg):
+    @irc.handle('PRIVMSG', 'CTCP VERSION', 'CTCP ACTION')
+    async def handle_all(irc, msg):
         command = msg.command.split(' ', 1)[0]
         called[command] += 1
 
@@ -123,18 +120,18 @@ async def test_ctcp_handlers():
     assert called['PRIVMSG'] == 0
     assert called['CTCP'] == 0
 
-    irc.handle_msg(reg_msg)
-    await asyncio.sleep(0.01)
+    reg_msg.handle(irc)
+    await asyncio.sleep(0)
     assert called['PRIVMSG'] == 1
     assert called['CTCP'] == 0
 
-    irc.handle_msg(ctcp_msg1)
-    await asyncio.sleep(0.01)
+    ctcp_msg1.handle(irc)
+    await asyncio.sleep(0)
     assert called['PRIVMSG'] == 1
     assert called['CTCP'] == 1
 
-    irc.handle_msg(ctcp_msg2)
-    await asyncio.sleep(0.01)
+    ctcp_msg2.handle(irc)
+    await asyncio.sleep(0.0)
     assert called['PRIVMSG'] == 1
     assert called['CTCP'] == 2
 
@@ -144,7 +141,7 @@ async def test_concurrency():
     irc = DummyIRC()
     completion_order = []
 
-    @irc.Handler('CUSTOM')
+    @irc.handle('CUSTOM')
     async def handle_all(irc, msg):
         name, timer = msg.args
         await asyncio.sleep(timer)
@@ -154,9 +151,9 @@ async def test_concurrency():
     msg2 = IRCMessage('CUSTOM', Hostmask(), {}, ['2nd', 0.2])
     msg3 = IRCMessage('CUSTOM', Hostmask(), {}, ['3rd', 0.3])
 
-    irc.handle_msg(msg2)
-    irc.handle_msg(msg3)
-    irc.handle_msg(msg1)
+    msg2.handle(irc)
+    msg3.handle(irc)
+    msg1.handle(irc)
 
     # wait for messages to complete since they are fire/forget
     await asyncio.sleep(0.4)
