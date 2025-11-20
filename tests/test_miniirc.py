@@ -43,7 +43,7 @@ def test_dict_to_tags():
 
 
 class DummyIRC(miniirc.IRC):
-    def __init__(self, ip='', port=0, nick='', *args, **kwargs):
+    def __init__(self, ip='', port=0, nick='a', *args, **kwargs):
         super().__init__(ip, port, nick, *args, **kwargs)
 
 

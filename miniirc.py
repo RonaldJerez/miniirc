@@ -252,6 +252,7 @@ class IRC:
     _unhandled_caps = None
     _combined_handlers = None
     _task = None
+    _nickname_re = re.compile(r'^(?![\d-])[\w`^|{}[\]\-\\]+$')
 
     def __init__(self, host, port, nick, *, 
                  channels=None,
@@ -284,6 +285,10 @@ class IRC:
         self.server_password = server_password
         self.max_reconnect_attempts = max_reconnect_attempts
         self._sendq = []
+
+        # validate the nickname
+        if not self._nickname_re.match(self.nick):
+            raise ValueError(f'Invalid nickname: {self.nick}')
 
         # Add IRCv3 capabilities.
         if self.password:
@@ -637,6 +642,11 @@ class IRC:
         """
         logger.debug(f'<<< {line}')
 
+    def alter_nickname(self):
+        """Alter the current nickname by appending an underscore."""
+        self.current_nick += '_'
+        return self.current_nick
+
 
 # Handle some IRC messages by default.
 @Handler('RPL_WELCOME')
@@ -675,18 +685,21 @@ async def _handler(irc, msg):
 
 
 @Handler('ERR_ERRONEUSNICKNAME', 'ERR_NICKNAMEINUSE')
-async def _handler(irc):
+async def _handler(irc, msg):
     if not irc.connected:
+        logger.info(f'{msg.command}: The requested nickname "{irc.current_nick}" is invalid or in use.')
 
-        with suppress(IndexError, ValueError):
-            return int(irc.nick[0])
+        new_nick = irc.alter_nickname()
 
-        if len(irc.current_nick) >= irc.isupport.get('NICKLEN', 20):
+        # TODO: we wouldnt have gotten an isupport response yet?
+        if not irc._nickname_re.match(new_nick) or len(new_nick) > irc.isupport.get('NICKLEN', 20):
+            logger.error(f'New nickname "{new_nick}" is invalid or too long. Disconnecting.')
+            with suppress(Exception):
+                await irc.disconnect()
             return
-        logger.warning(f'The requested nickname "{irc.current_nick}" is invalid.')
-        logger.warning(f'Trying again with "{irc.current_nick}_"')
-        irc.current_nick += '_'
-        await irc.send('NICK', irc.current_nick, force=True)
+
+        logger.info(f'Trying again with "{new_nick}"')
+        await irc.send('NICK', new_nick, force=True)
 
 
 # Server changed our nickname?

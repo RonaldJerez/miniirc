@@ -53,9 +53,9 @@ async def custom_irc_server():
 
 
 class DummyIRC(miniirc.IRC):
-    def __init__(self, port, **kwargs):
+    def __init__(self, port, nick='tester', **kwargs):
         persist = kwargs.pop('persist', False)
-        super().__init__('localhost', port, 'tester', persist=persist, **kwargs)
+        super().__init__('localhost', port, nick, persist=persist, **kwargs)
 
 
 base_exchange: dict = {
@@ -233,6 +233,27 @@ async def test_invalid_nickname(custom_irc_server):
     assert irc.current_nick == 'tester_'
 
 
+# test the nickname invalid functionality
+@pytest.mark.asyncio
+async def test_nickname_length(custom_irc_server):
+    responses = {
+        **base_exchange,
+        'USER very_long_nickname20 0 * :very_long_nickname20': '',
+        'NICK very_long_nickname20': '432',
+        'NICK very_long_nickname20_': '001 * arg1 :text'
+    }
+    port = await custom_irc_server(responses)
+    irc = DummyIRC(port, 'very_long_nickname20')
+
+    handled = { '001': 0 }
+
+    @irc.Handler('001')
+    async def _handle_001(irc, msg):
+        handled[msg.command] += 1
+
+    await irc.connect()
+    assert handled == {'001': 0}
+    assert irc.current_nick == 'very_long_nickname20_'
 
 
 # TODO test handled commands
