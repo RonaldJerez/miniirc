@@ -164,6 +164,7 @@ class Hostmask(NamedTuple):
     user: str = ''
     host: str = ''
 
+_background_handler_tasks = set()
 
 class IRCMessage(NamedTuple):
     """Represents a parsed IRC message."""
@@ -216,7 +217,9 @@ class IRCMessage(NamedTuple):
         if len(handlers) > 0:
             handled = True
             for handler in handlers:
-                asyncio.create_task(msg._start_handler(handler, irc))
+                task = asyncio.create_task(msg._start_handler(handler, irc))
+                _background_handler_tasks.add(task)
+                task.add_done_callback(_background_handler_tasks.discard)
 
         return handled
     
@@ -403,8 +406,10 @@ class IRC:
         self._sasl = self._pinged = False
 
         self._task = self._loop.create_task(self._async_main())
-        with suppress(asyncio.CancelledError):
+        try:
             await self._task
+        except asyncio.CancelledError:
+            self._task.uncancel()
 
     async def disconnect(self, msg=None, *, auto_reconnect=False):
         """Disconnect from the IRC server."""
@@ -427,8 +432,10 @@ class IRC:
         # Cancel any running task
         if self._task and not self._task.done():
             self._task.cancel()
-            with suppress(asyncio.CancelledError):
+            try:
                 await self._task
+            except asyncio.CancelledError:
+                self._task.uncancel()
 
         logger.info(f'Disconnected from {self.host}')
         self.on_disconnect()
