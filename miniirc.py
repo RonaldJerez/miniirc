@@ -242,6 +242,7 @@ class IRC:
     connected = None
     msglen = 512
     quit_message = 'I grew sick and died.'
+    _reconnect = False
     _sendq = None
     _loop = None
     _sasl = False
@@ -326,7 +327,6 @@ class IRC:
             return
 
         if not hasattr(self, '_writer'):
-            # Expected if connection is closed (ie: Force sending QUIT on disconnect)
             logger.debug('No writer available to send message')
             return
 
@@ -352,7 +352,7 @@ class IRC:
             self._writer.write(msg_bytes)
             await self._writer.drain()
         except Exception as e:
-            logger.error(f'Error sending message: {e}')
+            logger.error(f'Error sending message: {str_msg} ---- {e}')
 
     # User-friendly msg, notice, and CTCP functions.
     async def command(self, command, *args, force=False, tags=None):
@@ -411,34 +411,32 @@ class IRC:
         except asyncio.CancelledError:
             self._task.uncancel()
 
-    async def disconnect(self, msg=None, *, auto_reconnect=False):
+    async def disconnect(self, msg=None, *, auto_reconnect=None):
         """Disconnect from the IRC server."""
         if self._loop is None:
             return
-
-        self.persist = auto_reconnect
+        if auto_reconnect is not None:
+            self._reconnect = auto_reconnect
         self.connected = None
         self.active_caps.clear()
         self._unhandled_caps = None
 
-        with suppress(Exception):
-            await self.command('QUIT', msg or self.quit_message, force=True)
+        if hasattr(self, '_writer') and not self._writer.is_closing():
+            with suppress(Exception):
+                await self.command('QUIT', msg or self.quit_message, force=True)
 
-        if hasattr(self, '_writer'):
             self._writer.close()
             with suppress(ConnectionResetError):
                 await self._writer.wait_closed()
 
         # Cancel any running task
-        if self._task and not self._task.done():
+        current_task = asyncio.current_task()
+        if self._task and self._task is current_task and not self._task.done():
             self._task.cancel()
             try:
                 await self._task
             except asyncio.CancelledError:
                 self._task.uncancel()
-
-        logger.info(f'Disconnected from {self.host}')
-        self.on_disconnect()
 
     async def finish_negotiation(self, cap):
         """Finish IRCv3 capability negotiation for a given capability."""
@@ -529,6 +527,7 @@ class IRC:
     async def _establish_connection(self, ctx):
         """Establish connection to IRC server with retry logic."""
         attempt = 0
+        self._reconnect = False
         while True:
             try:
                 logger.debug(f'Initializing connection to {self.host} on port {self.port} (attempt {attempt + 1})')
@@ -536,12 +535,13 @@ class IRC:
                     asyncio.open_connection(self.host, self.port, ssl=ctx),
                     timeout=self.ping_timeout or self.ping_interval,
                 )
-                await self._send_initial_msgs()
                 logger.info(f'Socket connected to {self.host} on port {self.port}')
+                await self._send_initial_msgs()
                 return
             except (asyncio.TimeoutError, OSError) as e:
                 if hasattr(self, '_writer'):
                     self._writer.close()
+                    await self._writer.wait_closed()
                 
                 attempt += 1
                 if not self.persist or attempt >= self.max_reconnect_attempts:
@@ -584,6 +584,8 @@ class IRC:
         while True:
             try:
                 line = await self._read_line_with_timeout()
+
+                # line will return None if a PING was sent to check timeout
                 if line is None:
                     continue
                 
@@ -596,17 +598,19 @@ class IRC:
                     await self._process_line(line_str)
                     
             except Exception as exc:
-                logger.debug(f'Connection to {self.host} lost: {exc}')
+                logger.info(f'Disconnected from {self.host}')
+                logger.debug(f'Disconnection reason: {exc}')
 
-                # Only auto-reconnect if we had a successful initial connection (RPL_WELCOME received)
-                should_reconnect = self.persist and self.connected
-                await self.disconnect(auto_reconnect=should_reconnect)
+                # Only reconnect we had a successful initial connection (RPL_WELCOME received)
+                should_reconnect = self._reconnect or (self.persist and self.connected)
+                await self.disconnect()
+                self.on_disconnect()
 
-                # disconnect will set persist based on auto_reconnect value
-                if self.persist:
-                    await asyncio.sleep(5)
+                if should_reconnect:
                     logger.debug('Attempting to reconnect...')
+                    await asyncio.sleep(5)
                     await self.connect()
+
                 return
 
     async def _async_main(self):
@@ -753,7 +757,7 @@ async def _handler(irc, msg):
         if cap in irc.ircv3_caps:
             irc._unhandled_caps[cap] = raw
             if cap == 'sts':
-                irc._handle_cap(cap)
+                await irc._handle_cap(cap)
             else:
                 req.add(cap)
 
@@ -814,15 +818,17 @@ async def _handler(irc, msg):
             port = int(_tag_list_to_dict(msg.args[1].split(','))['port'])
         except (IndexError, KeyError, ValueError):
             return
-
-        persist = irc.persist
-        await irc.disconnect()
+        
         logger.info(f'STS detected, enabling TLS/SSL and changing the port to {port}')
+
+        # dont override ctx if already set (needed for testing)
+        if not irc.ssl:
+            irc.ssl = True
+        
         irc.port = port
-        irc.ssl = True
-        await asyncio.sleep(1)
-        await irc.connect()
-        irc.persist = persist
+        irc._reconnect = True
+
+        await irc.disconnect(auto_reconnect=True)
     else:
         await irc.finish_negotiation('sts')
 

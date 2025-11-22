@@ -147,15 +147,15 @@ async def test_concurrency():
         await asyncio.sleep(timer)
         completion_order.append(name)
 
-    msg1 = IRCMessage('CUSTOM', Hostmask(), {}, ['1st', 0.1])
-    msg2 = IRCMessage('CUSTOM', Hostmask(), {}, ['2nd', 0.2])
-    msg3 = IRCMessage('CUSTOM', Hostmask(), {}, ['3rd', 0.3])
+    msg1 = IRCMessage('CUSTOM', Hostmask(), {}, ['1st', 0.001])
+    msg2 = IRCMessage('CUSTOM', Hostmask(), {}, ['2nd', 0.002])
+    msg3 = IRCMessage('CUSTOM', Hostmask(), {}, ['3rd', 0.003])
 
     msg2.handle(irc)
     msg3.handle(irc)
     msg1.handle(irc)
 
     # wait for messages to complete since they are fire/forget
-    await asyncio.sleep(0.4)
+    await asyncio.sleep(0.004)
 
     assert completion_order == ['1st', '2nd', '3rd']

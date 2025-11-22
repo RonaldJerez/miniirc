@@ -16,6 +16,28 @@
             "python": "${workspaceFolder}/.venv/bin/python",
             "justMyCode": true,
             "env": { "PYTHONPATH": "${workspaceRoot}" },
+        },
+        {
+            "name": "Python Debugger: Isolate Test",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": [
+                "${input:TestName}",
+                "--log-cli-level=DEBUG"
+            ],
+            "console": "integratedTerminal",
+            "python": "${workspaceFolder}/.venv/bin/python",
+            "justMyCode": true,
+            "env": { "PYTHONPATH": "${workspaceRoot}" }
+        }
+    ],
+    "inputs": [
+        {
+            "id": "TestName",
+            "type": "promptString",
+            "description": "Enter the test path or name to isolate \n(e.g., tests/test_module.py::TestClass::test_method)",
+            "default": "tests/test_"
         }
     ]
 }

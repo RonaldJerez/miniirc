@@ -84,6 +84,7 @@ ircv3_exchange = {
 @pytest.mark.asyncio
 @pytest.mark.filterwarnings("ignore::UserWarning")
 async def test_basic_ssl_connection(custom_irc_server):
+    # TODO add mechanism to generate these on the fly so we dont have to worry about expiration
     server_ssl_ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
     server_ssl_ctx.load_cert_chain(certfile=os.path.join(script_dir, "server.crt"), keyfile=os.path.join(script_dir, "server.key"))
 
@@ -200,7 +201,8 @@ async def test_wait_until_disconnected(custom_irc_server, monkeypatch):
 
     handled = { '001': 0 }
 
-    @miniirc.handle('001')
+    @bot1.handle('001')
+    @bot2.handle('001')
     async def _handle_001(irc, msg):
         handled[msg.command] += 1
         await irc.send('QUIT')
@@ -256,5 +258,39 @@ async def test_nickname_length(custom_irc_server):
     assert irc.current_nick == 'very_long_nickname20_'
 
 
-# TODO test handled commands
+@pytest.mark.asyncio
+@pytest.mark.filterwarnings("ignore::UserWarning")
+async def test_sts(custom_irc_server, monkeypatch):
+    monkeypatch.setattr('asyncio.sleep', mock_sleep)
 
+    # create the ssl context and start the secured server for later use
+    server_ssl_ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
+    server_ssl_ctx.load_cert_chain(certfile=os.path.join(script_dir, "server.crt"), keyfile=os.path.join(script_dir, "server.key"))
+    secured_port = await custom_irc_server(base_exchange, ssl=server_ssl_ctx)
+
+    client_ssl_ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+    client_ssl_ctx.load_verify_locations(cafile=os.path.join(script_dir, "server.crt")) # Trust the self-signed server certificate
+    
+    # the unsecure client handlers, passes the STS capability with the secure port
+    responses = {
+        **base_exchange,
+        'CAP LS 302': f'CAP * LS :sts=duration=60,port={secured_port}',
+        'NICK tester': '',
+    }
+
+    # create a non secure server and conect to it
+    non_secured_port = await custom_irc_server(responses)
+    irc = DummyIRC(non_secured_port, verify_ssl=False)
+
+    @irc.handle('005')
+    async def _handle_005(irc):
+        await irc.send('QUIT')
+
+    @irc.handle('CAP ACK STS')
+    async def _add_ssl(irc):
+        # add the ssl ctx before the STS handler gets a chance to
+        irc.ssl = client_ssl_ctx
+
+    await irc.connect()
+    assert irc.port == secured_port
+    assert irc.ssl is not None
