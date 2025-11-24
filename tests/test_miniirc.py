@@ -20,11 +20,10 @@ def test_message_parser():
         )
 
     hostmask = Hostmask()
-    empty_tag = ''
     assert p(r'@tag1=value\:\swith\s\\spaces\rand\nnewlines;tag2;tag3= Hi') == (
         'Hi',
         hostmask,
-        {'tag1': 'value; with \\spaces\rand\nnewlines', 'tag2': empty_tag, 'tag3': empty_tag},
+        {'tag1': 'value; with \\spaces\rand\nnewlines', 'tag2': True, 'tag3': ''},
         [],
     )
 

@@ -85,7 +85,7 @@ def _tag_list_to_dict(tag_list):
     for tag in tag_list:
         tag = tag.split('=', 1)
         if len(tag) == 1:
-            tags[tag[0]] = ''
+            tags[tag[0]] = True
         elif len(tag) == 2:
             value = re.sub(r'\\(.)', _unescape_tag, tag[1])
             tags[tag[0]] = value
@@ -211,7 +211,7 @@ class IRCMessage(NamedTuple):
 
         msg = ctcp_msg or self
         msg_command = msg.command.upper()
-        combined_handlers = irc.get_combined_handlers()
+        combined_handlers = irc._get_combined_handlers()
         
         handlers = combined_handlers.get(msg_command, []) + combined_handlers.get(None, [])
         if len(handlers) > 0:
@@ -498,7 +498,7 @@ class IRC:
         # Return the parsed data
         return IRCMessage(cmd, hostmask, tags, args)
 
-    def get_combined_handlers(self):
+    def _get_combined_handlers(self):
         """Get combined global and instance-specific handlers."""
 
         # do this loop only once per instance, there shouldn't be any new handlers post init
