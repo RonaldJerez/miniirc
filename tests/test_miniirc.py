@@ -51,14 +51,14 @@ class IRCQuoteWrapper(DummyIRC):
     res: tuple | None = None
     TEST_FUNC = 'send'
 
-    async def send(self, *args, force=None, tags=None):
+    def send(self, *args, force=None, tags=None):
         assert self.res is None
         self.res = (' '.join(args), tags)
 
     @classmethod
     async def test(cls, *args, **kwargs):
         self = cls()
-        await getattr(self, cls.TEST_FUNC)(*args, **kwargs)
+        getattr(self, cls.TEST_FUNC)(*args, **kwargs)
         return self.res
 
     @classmethod

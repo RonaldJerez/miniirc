@@ -110,7 +110,7 @@ async def test_basic_ssl_connection(custom_irc_server):
     @irc.handle('005')
     async def _handle_005(irc, msg):
         handled[msg.command] += 1
-        await irc.send('QUIT')
+        irc.send('QUIT')
 
     await irc.connect()
     assert irc.isupport == {'NETWORK': 'Net', 'NICKLEN': 35}
@@ -138,7 +138,7 @@ async def test_multi_isupport(custom_irc_server):
         # only proceed on the second 005
         if state['count'] < 2: return
         
-        await irc.send('QUIT')
+        irc.send('QUIT')
 
     await irc.connect()
     assert irc.isupport == {'NETWORK': 'Net', 'NICKLEN': 35, 'ANOTHER': 'Val'}
@@ -152,7 +152,7 @@ async def test_sasl(custom_irc_server):
 
     @irc.handle('005')
     async def _handle_005(irc):
-        await irc.send('QUIT')
+        irc.send('QUIT')
 
     await irc.connect()
     assert irc.username == 'tester'
@@ -171,7 +171,7 @@ async def test_reconnect_attempts(caplog, monkeypatch):
     @irc.handle('001')
     async def _handle_001(irc, msg):
         handled[msg.command] += 1
-        await irc.send('QUIT')
+        irc.send('QUIT')
 
     await irc.connect()
     assert 'Failed to connect after 3 attempts' in caplog.text
@@ -193,7 +193,7 @@ async def test_reconnecting(custom_irc_server, monkeypatch):
         if handled[msg.command] > 2:
             irc.persist = False
 
-        await irc.send('QUIT')
+        irc.send('QUIT')
 
     await irc.connect()
     assert handled == {'001': 3}
@@ -213,7 +213,7 @@ async def test_wait_until_disconnected(custom_irc_server, monkeypatch):
     @bot2.handle('001')
     async def _handle_001(irc, msg):
         handled[msg.command] += 1
-        await irc.send('QUIT')
+        irc.send('QUIT')
 
     asyncio.create_task(bot1.connect())
     asyncio.create_task(bot2.connect())
@@ -237,7 +237,7 @@ async def test_invalid_nickname(custom_irc_server):
 
     @irc.handle('005')
     async def _handle_005(irc, msg):
-        await irc.send('QUIT')
+        irc.send('QUIT')
 
     await irc.connect()
     assert irc.current_nick == 'tester_'
@@ -296,7 +296,7 @@ async def test_sts(custom_irc_server, monkeypatch):
 
     @irc.handle('005')
     async def _handle_005(irc):
-        await irc.send('QUIT')
+        irc.send('QUIT')
 
     @irc.handle('CAP ACK STS')
     async def _add_ssl(irc):
