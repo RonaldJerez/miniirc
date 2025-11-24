@@ -233,7 +233,7 @@ class IRCMessage(NamedTuple):
                 # Run non-async handlers in the event loop's default executor
                 await irc._loop.run_in_executor(None, handler.func, *params[: handler.params_count])
         except Exception as e:
-            logger.exception(f'Handler {handler.func.__name__} raised an exception: {e}')
+            self.log.exception(f'Handler {handler.func.__name__} raised an exception: {e}')
 
 
 class IRC:
@@ -289,6 +289,7 @@ class IRC:
         self.server_password = server_password
         self.max_reconnect_attempts = max_reconnect_attempts
         self._sendq = []
+        self.log = logger
 
         # validate the nickname
         if not self._nickname_re.match(self.nick):
@@ -305,6 +306,28 @@ class IRC:
         if ssl is None and self.port == 6697:
             self.ssl = True
 
+    def set_logger(self, name, *, level=None, filename=None, format=None):
+        """Set up a logger for this IRC instance."""
+
+        instance_logger = logging.getLogger(name)
+        instance_logger.propagate = False
+
+        if level is not None:
+            instance_logger.setLevel(level)
+
+        if filename is not None:
+            if instance_logger.hasHandlers():
+                self.log.warning(f'Logger "{name}" already has handlers, skipping file handler creation.')
+            else:
+                handler = logging.FileHandler(filename)
+                if format is not None:
+                    formatter = logging.Formatter(format)
+                    handler.setFormatter(formatter)
+                instance_logger.addHandler(handler)
+
+        self.log = instance_logger
+
+
     async def send(self, *msg, force=False, tags=None):
         """Send a raw IRC message by joining arguments with spaces.
         
@@ -320,17 +343,17 @@ class IRC:
         str_msg = ' '.join(str(m) for m in msg)
 
         if not self.connected and not force:
-            logger.debug(f'>Q> {str_msg}')
+            self.log.debug(f'>Q> {str_msg}')
             if not self._sendq:
                 self._sendq = []
             self._sendq.append((tags, msg))
             return
 
         if not hasattr(self, '_writer'):
-            logger.debug('No writer available to send message')
+            self.log.debug('No writer available to send message')
             return
 
-        logger.debug(f'>>> {str_msg}')
+        self.log.debug(f'>>> {str_msg}')
         
         msg_bytes = str_msg.replace('\x00', '\ufffd').encode('utf-8', errors='replace')
         msg_bytes = msg_bytes.replace(b'\r', b' ').replace(b'\n', b' ')
@@ -352,7 +375,7 @@ class IRC:
             self._writer.write(msg_bytes)
             await self._writer.drain()
         except Exception as e:
-            logger.error(f'Error sending message: {str_msg} ---- {e}')
+            self.log.error(f'Error sending message: {str_msg} ---- {e}')
 
     # User-friendly msg, notice, and CTCP functions.
     async def command(self, command, *args, force=False, tags=None):
@@ -387,7 +410,7 @@ class IRC:
         use wait_until_disconnected(), after making your connection.
         """
         if self.connected is not None:
-            logger.debug('Already connected!')
+            self.log.debug('Already connected!')
             return
 
         if loop is None:
@@ -402,7 +425,7 @@ class IRC:
         self.connected = False
         self._unhandled_caps = None
         self.current_nick = self.nick
-        logger.debug('Starting main loop...')
+        self.log.debug('Starting main loop...')
         self._sasl = self._pinged = False
 
         self._task = self._loop.create_task(self._async_main())
@@ -440,7 +463,7 @@ class IRC:
 
     async def finish_negotiation(self, cap):
         """Finish IRCv3 capability negotiation for a given capability."""
-        logger.debug(f'Capability {cap} handled')
+        self.log.debug(f'Capability {cap} handled')
         if self._unhandled_caps:
             cap = cap.lower()
             if cap in self._unhandled_caps:
@@ -530,12 +553,12 @@ class IRC:
         self._reconnect = False
         while True:
             try:
-                logger.debug(f'Initializing connection to {self.host} on port {self.port} (attempt {attempt + 1})')
+                self.log.debug(f'Initializing connection to {self.host} on port {self.port} (attempt {attempt + 1})')
                 self._reader, self._writer = await asyncio.wait_for(
                     asyncio.open_connection(self.host, self.port, ssl=ctx),
                     timeout=self.ping_timeout or self.ping_interval,
                 )
-                logger.info(f'Socket connected to {self.host} on port {self.port}')
+                self.log.info(f'Socket connected to {self.host} on port {self.port}')
                 await self._send_initial_msgs()
                 return
             except (asyncio.TimeoutError, OSError) as e:
@@ -545,13 +568,13 @@ class IRC:
                 
                 attempt += 1
                 if not self.persist or attempt >= self.max_reconnect_attempts:
-                    logger.error(f'Failed to connect after {attempt} attempts')
-                    logger.error(str(e))
+                    self.log.error(f'Failed to connect after {attempt} attempts')
+                    self.log.error(str(e))
                     break
                 
                 # Exponential delay, capped at 5 minutes
                 delay = min(2 ** attempt, 300)
-                logger.debug(f'Failed to connect, trying again in {delay} seconds...')
+                self.log.debug(f'Failed to connect, trying again in {delay} seconds...')
                 await asyncio.sleep(delay)
 
     async def _read_line_with_timeout(self):
@@ -575,9 +598,9 @@ class IRC:
             if isinstance(msg, IRCMessage):
                 msg.handle(self)
             else:
-                logger.debug(f'Ignored message: {line_str}')
+                self.log.debug(f'Ignored message: {line_str}')
         except Exception as exc:
-            logger.error('Error handling IRC message', exc_info=exc)
+            self.log.error('Error handling IRC message', exc_info=exc)
 
     async def _message_loop(self):
         """Main message reading and processing loop."""
@@ -590,7 +613,7 @@ class IRC:
                     continue
                 
                 if not line:
-                    logger.debug('Received empty line, connection might be closed.')
+                    self.log.debug('Received empty line, connection might be closed.')
                     raise ConnectionAbortedError
                 
                 line_str = line.rstrip(b'\r\n').decode('utf-8', 'replace')
@@ -598,8 +621,8 @@ class IRC:
                     await self._process_line(line_str)
                     
             except Exception as exc:
-                logger.info(f'Disconnected from {self.host}')
-                logger.debug(f'Disconnection reason: {exc}')
+                self.log.info(f'Disconnected from {self.host}')
+                self.log.debug(f'Disconnection reason: {exc}')
 
                 # Only reconnect we had a successful initial connection (RPL_WELCOME received)
                 should_reconnect = self._reconnect or (self.persist and self.connected)
@@ -607,7 +630,7 @@ class IRC:
                 self.on_disconnect()
 
                 if should_reconnect:
-                    logger.debug('Attempting to reconnect...')
+                    self.log.debug('Attempting to reconnect...')
                     await asyncio.sleep(5)
                     await self.connect()
 
@@ -641,7 +664,7 @@ class IRC:
         Print every line received when debugging. 
         Override this method to customize or filter which lines to print.
         """
-        logger.debug(f'<<< {line}')
+        self.log.debug(f'<<< {line}')
 
     def alter_nickname(self):
         """Alter the current nickname by appending an underscore."""
@@ -658,15 +681,15 @@ async def _handler(irc):
     irc.isupport.clear()
     irc._unhandled_caps = None
 
-    logger.info(f'Welcome message received from {irc.host}! Connection fully established.')
+    irc.log.info(f'Welcome message received from {irc.host}! Connection fully established.')
 
     if irc.connect_modes:
         await irc.send('MODE', irc.current_nick, irc.connect_modes)
     if not irc._sasl and irc.password:
-        logger.debug('Logging in (no SASL, aww)...')
+        irc.log.debug('Logging in (no SASL, aww)...')
         await irc.msg('NickServ', f'identify {irc.username} {irc.password}')
     if irc.channels:
-        logger.debug(f'*** Joining channels... {irc.channels}')
+        irc.log.debug(f'*** Joining channels... {irc.channels}')
         await irc.send('JOIN', ','.join(irc.channels))
 
     # Handle queued messages
@@ -690,18 +713,18 @@ async def _handler(irc, msg):
 @handle('ERR_ERRONEUSNICKNAME', 'ERR_NICKNAMEINUSE')
 async def _handler(irc, msg):
     if not irc.connected:
-        logger.info(f'{msg.command}: The requested nickname "{irc.current_nick}" is invalid or in use.')
+        irc.log.info(f'{msg.command}: The requested nickname "{irc.current_nick}" is invalid or in use.')
 
         new_nick = irc.alter_nickname()
 
         # TODO: we wouldnt have gotten an isupport response yet?
         if not irc._nickname_re.match(new_nick) or len(new_nick) > irc.isupport.get('NICKLEN', 20):
-            logger.error(f'New nickname "{new_nick}" is invalid or too long. Disconnecting.')
+            irc.log.error(f'New nickname "{new_nick}" is invalid or too long. Disconnecting.')
             with suppress(Exception):
                 await irc.disconnect()
             return
 
-        logger.info(f'Trying again with "{new_nick}"')
+        irc.log.info(f'Trying again with "{new_nick}"')
         await irc.send('NICK', new_nick, force=True)
 
 
@@ -802,7 +825,7 @@ async def _handler(irc, msg):
 async def _handler(irc):
     if irc._sasl:
         irc._sasl = False
-        logger.warning(f'SASL authentication failed for {irc.host}')
+        irc.log.warning(f'SASL authentication failed for {irc.host}')
         await irc.send('AUTHENTICATE *', force=True)
 
 
@@ -819,7 +842,7 @@ async def _handler(irc, msg):
         except (IndexError, KeyError, ValueError):
             return
         
-        logger.info(f'STS detected, enabling TLS/SSL and changing the port to {port}')
+        irc.log.info(f'STS detected, enabling TLS/SSL and changing the port to {port}')
 
         # dont override ctx if already set (needed for testing)
         if not irc.ssl:
