@@ -7,8 +7,10 @@ import os
 
 script_dir = os.path.dirname(__file__)
 
+
 # to be used to speed up tests by mocking asyncio.sleep
 async def mock_sleep(delay): ...
+
 
 @pytest.fixture
 async def custom_irc_server():
@@ -33,7 +35,7 @@ async def custom_irc_server():
                 for resp_line in response.split('\n'):
                     writer.write((resp_line + '\r\n').encode('utf-8'))
                     await writer.drain()
-                    
+
             writer.close()
             await writer.wait_closed()
 
@@ -81,19 +83,24 @@ ircv3_exchange = {
     )
 }
 
+
 @pytest.mark.asyncio
-@pytest.mark.filterwarnings("ignore::UserWarning")
+@pytest.mark.filterwarnings('ignore::UserWarning')
 async def test_basic_ssl_connection(custom_irc_server):
     # TODO add mechanism to generate these on the fly so we dont have to worry about expiration
     server_ssl_ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-    server_ssl_ctx.load_cert_chain(certfile=os.path.join(script_dir, "server.crt"), keyfile=os.path.join(script_dir, "server.key"))
+    server_ssl_ctx.load_cert_chain(
+        certfile=os.path.join(script_dir, 'server.crt'), keyfile=os.path.join(script_dir, 'server.key')
+    )
 
     client_ssl_ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
-    client_ssl_ctx.load_verify_locations(cafile=os.path.join(script_dir, "server.crt")) # Trust the self-signed server certificate
-    
+    client_ssl_ctx.load_verify_locations(
+        cafile=os.path.join(script_dir, 'server.crt')
+    )  # Trust the self-signed server certificate
+
     port = await custom_irc_server(base_exchange, ssl=server_ssl_ctx)
-    irc = DummyIRC(port, ssl=client_ssl_ctx, verify_ssl=False)  
-    handled = { '001': 0, '005': 0 }
+    irc = DummyIRC(port, ssl=client_ssl_ctx, verify_ssl=False)
+    handled = {'001': 0, '005': 0}
 
     @irc.handle('001')
     async def _handle_001(irc, msg):
@@ -115,7 +122,7 @@ async def test_multi_isupport(custom_irc_server):
     responses = {
         **base_exchange,
         'USER tester 0 * :tester': 'PING :test',
-        'PONG :test': '005 * ANOTHER=Val INVALID_LEN=a35 :are supported by this server'
+        'PONG :test': '005 * ANOTHER=Val INVALID_LEN=a35 :are supported by this server',
     }
 
     port = await custom_irc_server(responses)
@@ -151,15 +158,15 @@ async def test_sasl(custom_irc_server):
     assert irc.username == 'tester'
     assert irc.current_nick == 'tester'
     assert 'BOT' in irc.isupport
-    
+
 
 @pytest.mark.asyncio
 async def test_reconnect_attempts(caplog, monkeypatch):
     monkeypatch.setattr('asyncio.sleep', mock_sleep)
-  
+
     # TODO use logic to find an actual used port
-    irc = DummyIRC(7890, max_reconnect_attempts=3, persist=True)    
-    handled = { '001': 0 }
+    irc = DummyIRC(7890, max_reconnect_attempts=3, persist=True)
+    handled = {'001': 0}
 
     @irc.handle('001')
     async def _handle_001(irc, msg):
@@ -175,8 +182,8 @@ async def test_reconnecting(custom_irc_server, monkeypatch):
     monkeypatch.setattr('asyncio.sleep', mock_sleep)
 
     port = await custom_irc_server(base_exchange)
-    irc = DummyIRC(port, max_reconnect_attempts=3, persist=True)    
-    handled = { '001': 0 }
+    irc = DummyIRC(port, max_reconnect_attempts=3, persist=True)
+    handled = {'001': 0}
 
     @irc.handle('001')
     async def _handle_001(irc, msg):
@@ -191,6 +198,7 @@ async def test_reconnecting(custom_irc_server, monkeypatch):
     await irc.connect()
     assert handled == {'001': 3}
 
+
 @pytest.mark.asyncio
 async def test_wait_until_disconnected(custom_irc_server, monkeypatch):
     monkeypatch.setattr('asyncio.sleep', mock_sleep)
@@ -199,7 +207,7 @@ async def test_wait_until_disconnected(custom_irc_server, monkeypatch):
     bot1 = DummyIRC(port)
     bot2 = DummyIRC(port)
 
-    handled = { '001': 0 }
+    handled = {'001': 0}
 
     @bot1.handle('001')
     @bot2.handle('001')
@@ -225,7 +233,7 @@ async def test_invalid_nickname(custom_irc_server):
         ),
     }
     port = await custom_irc_server(responses)
-    irc = DummyIRC(port)    
+    irc = DummyIRC(port)
 
     @irc.handle('005')
     async def _handle_005(irc, msg):
@@ -242,12 +250,12 @@ async def test_nickname_length(custom_irc_server):
         **base_exchange,
         'USER very_long_nickname20 0 * :very_long_nickname20': '',
         'NICK very_long_nickname20': '432',
-        'NICK very_long_nickname20_': '001 * arg1 :text'
+        'NICK very_long_nickname20_': '001 * arg1 :text',
     }
     port = await custom_irc_server(responses)
     irc = DummyIRC(port, 'very_long_nickname20')
 
-    handled = { '001': 0 }
+    handled = {'001': 0}
 
     @irc.handle('001')
     async def _handle_001(irc, msg):
@@ -259,18 +267,22 @@ async def test_nickname_length(custom_irc_server):
 
 
 @pytest.mark.asyncio
-@pytest.mark.filterwarnings("ignore::UserWarning")
+@pytest.mark.filterwarnings('ignore::UserWarning')
 async def test_sts(custom_irc_server, monkeypatch):
     monkeypatch.setattr('asyncio.sleep', mock_sleep)
 
     # create the ssl context and start the secured server for later use
     server_ssl_ctx = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-    server_ssl_ctx.load_cert_chain(certfile=os.path.join(script_dir, "server.crt"), keyfile=os.path.join(script_dir, "server.key"))
+    server_ssl_ctx.load_cert_chain(
+        certfile=os.path.join(script_dir, 'server.crt'), keyfile=os.path.join(script_dir, 'server.key')
+    )
     secured_port = await custom_irc_server(base_exchange, ssl=server_ssl_ctx)
 
     client_ssl_ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
-    client_ssl_ctx.load_verify_locations(cafile=os.path.join(script_dir, "server.crt")) # Trust the self-signed server certificate
-    
+    client_ssl_ctx.load_verify_locations(
+        cafile=os.path.join(script_dir, 'server.crt')
+    )  # Trust the self-signed server certificate
+
     # the unsecure client handlers, passes the STS capability with the secure port
     responses = {
         **base_exchange,

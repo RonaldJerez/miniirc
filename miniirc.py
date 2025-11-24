@@ -58,11 +58,13 @@ _IRC_NUMERICS = {
     'ERR_SASLABORTED': '905',
 }
 
+
 def register_numerics(numerics):
     """
     Register additional IRC numeric replies.
     """
     _IRC_NUMERICS.update(numerics)
+
 
 def _event_name_to_numeric(event):
     """Convert event name to its numeric value if applicable"""
@@ -71,16 +73,19 @@ def _event_name_to_numeric(event):
     event = str(event).upper()
     return _IRC_NUMERICS.get(event, event)
 
+
 # Parse IRCv3 tags
 _ircv3_tag_escapes = {':': ';', 's': ' ', 'r': '\r', 'n': '\n'}
+
 
 def _unescape_tag(match):
     char = match.group(1)
     return _ircv3_tag_escapes.get(char, char)
 
+
 def _tag_list_to_dict(tag_list):
     """Convert a list of IRCv3 tag strings to a dictionary."""
-    
+
     tags = {}
     for tag in tag_list:
         tag = tag.split('=', 1)
@@ -92,12 +97,14 @@ def _tag_list_to_dict(tag_list):
 
     return tags
 
+
 def _escape_tag(tag):
     """Escape a tag value for IRCv3 message tags."""
     tag = str(tag).replace('\\', '\\\\')
     for i in _ircv3_tag_escapes:
         tag = tag.replace(_ircv3_tag_escapes[i], '\\' + i)
     return tag
+
 
 def _dict_to_tags(tags):
     """Convert a dictionary of tags to an IRCv3 tag string."""
@@ -118,6 +125,7 @@ def _dict_to_tags(tags):
 
 class Handler:
     """Internal handler wrapper for IRC event callbacks."""
+
     __slots__ = ('func', 'awaitable', 'params_count')
 
     def __init__(self, func):
@@ -133,10 +141,10 @@ class Handler:
 
 class HandlersCollection:
     """Handler decorator and manager for IRC events."""
-    
+
     def __init__(self):
         self.handlers = {}
-    
+
     def __call__(self, *events):
         """Decorator to add a handler for one or more IRC events."""
         if not events:
@@ -153,21 +161,25 @@ class HandlersCollection:
             return func
 
         return wrapper
-    
+
     def getHandlers(self):
         return self.handlers
 
 
 class Hostmask(NamedTuple):
     """Represents an IRC hostmask (nick!user@host)."""
+
     nick: str = ''
     user: str = ''
     host: str = ''
 
+
 _background_handler_tasks = set()
+
 
 class IRCMessage(NamedTuple):
     """Represents a parsed IRC message."""
+
     command: str
     hostmask: Hostmask = Hostmask()
     tags: dict | None = None
@@ -197,7 +209,7 @@ class IRCMessage(NamedTuple):
         new_args.insert(0, target)
 
         return self._replace(command=new_command, args=new_args)
-    
+
     def handle(self, irc):
         """Dispatch a parsed IRC message to registered handlers."""
         ctcp_msg = None
@@ -212,7 +224,7 @@ class IRCMessage(NamedTuple):
         msg = ctcp_msg or self
         msg_command = msg.command.upper()
         combined_handlers = irc._get_combined_handlers()
-        
+
         handlers = combined_handlers.get(msg_command, []) + combined_handlers.get(None, [])
         if len(handlers) > 0:
             handled = True
@@ -222,7 +234,7 @@ class IRCMessage(NamedTuple):
                 task.add_done_callback(_background_handler_tasks.discard)
 
         return handled
-    
+
     async def _start_handler(self, handler, irc):
         """Start a handler for a given message, running async or in executor."""
         try:
@@ -423,15 +435,15 @@ class IRC:
                 if hasattr(self, '_writer'):
                     self._writer.close()
                     await self._writer.wait_closed()
-                
+
                 attempt += 1
                 if not self.persist or attempt >= self.max_reconnect_attempts:
                     self.log.error(f'Failed to connect after {attempt} attempts')
                     self.log.error(str(e))
                     break
-                
+
                 # Exponential delay, capped at 5 minutes
-                delay = min(2 ** attempt, 300)
+                delay = min(2**attempt, 300)
                 self.log.debug(f'Failed to connect, trying again in {delay} seconds...')
                 await asyncio.sleep(delay)
 
@@ -449,7 +461,7 @@ class IRC:
         This can be used with asyncio.gather() to wait for multiple connections:
         await asyncio.gather(irc1.wait_until_disconnected(), irc2.wait_until_disconnected())
 
-        raises: asyncio.CancelledError. 
+        raises: asyncio.CancelledError.
         """
         if self._task:
             await self._task
@@ -457,11 +469,11 @@ class IRC:
     # 3. Message Sending
     async def send(self, *msg, force=False, tags=None):
         """Send a raw IRC message by joining arguments with spaces.
-        
+
         This is the low-level method that sends exactly what you provide.
         For formatted IRC commands with automatic trailing parameter handling,
         use command() instead.
-        
+
         Args:
             *msg: Message components to join with spaces
             force: Send even if not connected (for connection setup)
@@ -481,7 +493,7 @@ class IRC:
             return
 
         self.log.debug(f'>>> {str_msg}')
-        
+
         msg_bytes = str_msg.replace('\x00', '\ufffd').encode('utf-8', errors='replace')
         msg_bytes = msg_bytes.replace(b'\r', b' ').replace(b'\n', b' ')
 
@@ -497,7 +509,7 @@ class IRC:
             msg_bytes = _dict_to_tags(tags) + msg_bytes
 
         msg_bytes += b'\r\n'
-        
+
         try:
             self._writer.write(msg_bytes)
             await self._writer.drain()
@@ -518,7 +530,7 @@ class IRC:
     async def notice(self, target, msg, tags=None):
         """Send a NOTICE to a target."""
         await self.command('NOTICE', target, msg, tags=tags)
-        
+
     async def ctcp(self, target, *msg, reply=False, tags=None):
         """Send a CTCP message or reply to a target."""
         m = self.notice if reply else self.msg
@@ -590,15 +602,15 @@ class IRC:
                 # line will return None if a PING was sent to check timeout
                 if line is None:
                     continue
-                
+
                 if not line:
                     self.log.debug('Received empty line, connection might be closed.')
                     raise ConnectionAbortedError
-                
+
                 line_str = line.rstrip(b'\r\n').decode('utf-8', 'replace')
                 if line_str:
                     await self._process_line(line_str)
-                    
+
             except Exception as exc:
                 self.log.info(f'Disconnected from {self.host}')
                 self.log.debug(f'Disconnection reason: {exc}')
@@ -663,7 +675,7 @@ class IRC:
 
     def debug_print_line(self, line):
         """
-        Print every line received when debugging. 
+        Print every line received when debugging.
         Override this method to customize or filter which lines to print.
         """
         self.log.debug(f'<<< {line}')
@@ -676,6 +688,7 @@ class IRC:
 
 # Create global handler instance
 handle = HandlersCollection()
+
 
 # Handle some IRC messages by default.
 @handle('RPL_WELCOME')
@@ -844,13 +857,13 @@ async def _handler(irc, msg):
             port = int(_tag_list_to_dict(msg.args[1].split(','))['port'])
         except (IndexError, KeyError, ValueError):
             return
-        
+
         irc.log.info(f'STS detected, enabling TLS/SSL and changing the port to {port}')
 
         # dont override ctx if already set (needed for testing)
         if not irc.ssl:
             irc.ssl = True
-        
+
         irc.port = port
         irc._reconnect = True
 

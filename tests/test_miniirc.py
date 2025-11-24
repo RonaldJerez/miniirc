@@ -5,9 +5,11 @@ import collections
 import pathlib
 from miniirc import IRCMessage, Hostmask
 
+
 class DummyIRC(miniirc.IRC):
     def __init__(self, ip='', port=0, nick='a', *args, **kwargs):
         super().__init__(ip, port, nick, *args, **kwargs)
+
 
 def test_message_parser():
     irc = DummyIRC()

@@ -3,11 +3,13 @@ import logging
 import tempfile
 from miniirc import IRC
 
+
 def test_set_logger_level_and_name():
     irc = IRC('localhost', 6667, 'testnick')
     irc.set_logger('miniirc.testlogger', level=logging.INFO)
     assert irc.log.name == 'miniirc.testlogger'
     assert irc.log.level == logging.INFO
+
 
 def test_set_logger_file_and_format():
     irc = IRC('localhost', 6667, 'testnick')
@@ -23,6 +25,7 @@ def test_set_logger_file_and_format():
     assert 'WARNING:miniirc.filelogger:Test warning message' in content
 
     os.remove(filename)
+
 
 def test_instance_loggers_are_distinct():
     import tempfile
