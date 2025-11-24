@@ -258,6 +258,7 @@ class IRC:
         r'$'
     )
 
+    # 1. Initialization & Configuration
     def __init__(self, host, port, nick, *, 
                  channels=None,
                  username=None, realname=None, 
@@ -327,81 +328,7 @@ class IRC:
 
         self.log = instance_logger
 
-
-    async def send(self, *msg, force=False, tags=None):
-        """Send a raw IRC message by joining arguments with spaces.
-        
-        This is the low-level method that sends exactly what you provide.
-        For formatted IRC commands with automatic trailing parameter handling,
-        use command() instead.
-        
-        Args:
-            *msg: Message components to join with spaces
-            force: Send even if not connected (for connection setup)
-            tags: IRCv3 message tags dictionary
-        """
-        str_msg = ' '.join(str(m) for m in msg)
-
-        if not self.connected and not force:
-            self.log.debug(f'>Q> {str_msg}')
-            if not self._sendq:
-                self._sendq = []
-            self._sendq.append((tags, msg))
-            return
-
-        if not hasattr(self, '_writer'):
-            self.log.debug('No writer available to send message')
-            return
-
-        self.log.debug(f'>>> {str_msg}')
-        
-        msg_bytes = str_msg.replace('\x00', '\ufffd').encode('utf-8', errors='replace')
-        msg_bytes = msg_bytes.replace(b'\r', b' ').replace(b'\n', b' ')
-
-        # Truncate if needed
-        # TODO multi line support?
-        if len(msg_bytes) + 2 > self.msglen:
-            msg_bytes = msg_bytes[: self.msglen - 2]
-            # Re-decode and encode to avoid splitting multi-byte characters
-            msg_bytes = msg_bytes.decode('utf-8', errors='ignore').encode('utf-8')
-
-        # Add tags if applicable
-        if isinstance(tags, dict) and 'message-tags' in self.active_caps:
-            msg_bytes = _dict_to_tags(tags) + msg_bytes
-
-        msg_bytes += b'\r\n'
-        
-        try:
-            self._writer.write(msg_bytes)
-            await self._writer.drain()
-        except Exception as e:
-            self.log.error(f'Error sending message: {str_msg} ---- {e}')
-
-    # User-friendly msg, notice, and CTCP functions.
-    async def command(self, command, *args, force=False, tags=None):
-        """Send a IRC command with arguments. Applying ':' to the last argument."""
-        if args:
-            args = list(args)
-            args[-1] = ':' + str(args[-1])
-        await self.send(command, *args, force=force, tags=tags)
-
-    async def msg(self, target, msg, tags=None):
-        """Send a PRIVMSG to a target."""
-        await self.command('PRIVMSG', target, msg, tags=tags)
-
-    async def notice(self, target, msg, tags=None):
-        """Send a NOTICE to a target."""
-        await self.command('NOTICE', target, msg, tags=tags)
-        
-    async def ctcp(self, target, *msg, reply=False, tags=None):
-        """Send a CTCP message or reply to a target."""
-        m = self.notice if reply else self.msg
-        await m(target, f'\x01{" ".join(map(str, msg))}\x01', tags=tags)
-
-    async def me(self, target, msg, tags=None):
-        """Send a CTCP ACTION (/me) to a target."""
-        await self.ctcp(target, 'ACTION', msg, tags=tags)
-
+    # 2. Connection Management
     async def connect(self, *, loop=None):
         """
         Connect to the IRC server and start the main loop.
@@ -461,75 +388,6 @@ class IRC:
             except asyncio.CancelledError:
                 self._task.uncancel()
 
-    async def finish_negotiation(self, cap):
-        """Finish IRCv3 capability negotiation for a given capability."""
-        self.log.debug(f'Capability {cap} handled')
-        if self._unhandled_caps:
-            cap = cap.lower()
-            if cap in self._unhandled_caps:
-                del self._unhandled_caps[cap]
-            if len(self._unhandled_caps) < 1:
-                self._unhandled_caps = None
-                if not self.connected:
-                    await self.send('CAP END', force=True)
-
-    def message_parser(self, msg):
-        """Parse a raw IRC message string into an IRCMessage object."""
-        match = self._msg_re.match(msg)
-        if not match:
-            return
-
-        # Process IRCv3 tags
-        raw_tags = match.group(1)
-        tags = {} if raw_tags is None else _tag_list_to_dict(raw_tags.split(';'))
-
-        # Process arguments
-        hostmask = Hostmask(*match.groups('')[1:4])
-        cmd = match.group(5)
-
-        # Get the command and arguments
-        raw_args = match.group(6)
-        args = [] if raw_args is None else raw_args.split(' ')
-
-        trailing = match.group(7)
-        if trailing:
-            args.append(trailing)
-
-        # Return the parsed data
-        return IRCMessage(cmd, hostmask, tags, args)
-
-    def _get_combined_handlers(self):
-        """Get combined global and instance-specific handlers."""
-
-        # do this loop only once per instance, there shouldn't be any new handlers post init
-        if self._combined_handlers is None:
-            self._combined_handlers = {}
-            global_handlers = handle.getHandlers()
-            instance_handlers = self.handle.getHandlers()
-
-            for key in set(global_handlers) | set(instance_handlers):
-                self._combined_handlers[key] = global_handlers.get(key, []) + instance_handlers.get(key, [])
-
-        return self._combined_handlers
-
-    async def _handle_cap(self, cap):
-        """Handle IRCv3 capability acknowledgement."""
-        cap = cap.lower()
-        self.active_caps.add(cap)
-        if self._unhandled_caps and cap in self._unhandled_caps:
-            msg = IRCMessage(f'CAP ACK {cap}', args=self._unhandled_caps[cap])
-            handled = msg.handle(self)
-            if not handled:
-                await self.finish_negotiation(cap)
-
-    async def _send_initial_msgs(self):
-        """Send initial registration and capability negotiation messages."""
-        if self.server_password:
-            await self.send('PASS', self.server_password, force=True)
-        await self.send('CAP LS 302', force=True)
-        await self.command('USER', self.username, '0 *', self.realname, force=True)
-        await self.send('NICK', self.nick, force=True)
-
     def _create_ssl_context(self):
         """Create and configure SSL context for secure connections."""
         if not self.ssl:
@@ -577,17 +435,138 @@ class IRC:
                 self.log.debug(f'Failed to connect, trying again in {delay} seconds...')
                 await asyncio.sleep(delay)
 
-    async def _read_line_with_timeout(self):
-        """Read a line from the IRC server with ping timeout handling."""
-        timeout = self.ping_timeout if self._pinged else self.ping_interval
+    async def _send_initial_msgs(self):
+        """Send initial registration and capability negotiation messages."""
+        if self.server_password:
+            await self.send('PASS', self.server_password, force=True)
+        await self.send('CAP LS 302', force=True)
+        await self.command('USER', self.username, '0 *', self.realname, force=True)
+        await self.send('NICK', self.nick, force=True)
+
+    async def wait_until_disconnected(self):
+        """Wait until the IRC connection is closed.
+
+        This can be used with asyncio.gather() to wait for multiple connections:
+        await asyncio.gather(irc1.wait_until_disconnected(), irc2.wait_until_disconnected())
+
+        raises: asyncio.CancelledError. 
+        """
+        if self._task:
+            await self._task
+
+    # 3. Message Sending
+    async def send(self, *msg, force=False, tags=None):
+        """Send a raw IRC message by joining arguments with spaces.
+        
+        This is the low-level method that sends exactly what you provide.
+        For formatted IRC commands with automatic trailing parameter handling,
+        use command() instead.
+        
+        Args:
+            *msg: Message components to join with spaces
+            force: Send even if not connected (for connection setup)
+            tags: IRCv3 message tags dictionary
+        """
+        str_msg = ' '.join(str(m) for m in msg)
+
+        if not self.connected and not force:
+            self.log.debug(f'>Q> {str_msg}')
+            if not self._sendq:
+                self._sendq = []
+            self._sendq.append((tags, msg))
+            return
+
+        if not hasattr(self, '_writer'):
+            self.log.debug('No writer available to send message')
+            return
+
+        self.log.debug(f'>>> {str_msg}')
+        
+        msg_bytes = str_msg.replace('\x00', '\ufffd').encode('utf-8', errors='replace')
+        msg_bytes = msg_bytes.replace(b'\r', b' ').replace(b'\n', b' ')
+
+        # Truncate if needed
+        # TODO multi line support?
+        if len(msg_bytes) + 2 > self.msglen:
+            msg_bytes = msg_bytes[: self.msglen - 2]
+            # Re-decode and encode to avoid splitting multi-byte characters
+            msg_bytes = msg_bytes.decode('utf-8', errors='ignore').encode('utf-8')
+
+        # Add tags if applicable
+        if isinstance(tags, dict) and 'message-tags' in self.active_caps:
+            msg_bytes = _dict_to_tags(tags) + msg_bytes
+
+        msg_bytes += b'\r\n'
+        
         try:
-            return await asyncio.wait_for(self._reader.readuntil(b'\n'), timeout=timeout)
-        except asyncio.TimeoutError:
-            if self._pinged:
-                raise
-            self._pinged = True
-            await self.send('PING :miniirc-ping', force=True)
-            return None
+            self._writer.write(msg_bytes)
+            await self._writer.drain()
+        except Exception as e:
+            self.log.error(f'Error sending message: {str_msg} ---- {e}')
+
+    async def command(self, command, *args, force=False, tags=None):
+        """Send a IRC command with arguments. Applying ':' to the last argument."""
+        if args:
+            args = list(args)
+            args[-1] = ':' + str(args[-1])
+        await self.send(command, *args, force=force, tags=tags)
+
+    async def msg(self, target, msg, tags=None):
+        """Send a PRIVMSG to a target."""
+        await self.command('PRIVMSG', target, msg, tags=tags)
+
+    async def notice(self, target, msg, tags=None):
+        """Send a NOTICE to a target."""
+        await self.command('NOTICE', target, msg, tags=tags)
+        
+    async def ctcp(self, target, *msg, reply=False, tags=None):
+        """Send a CTCP message or reply to a target."""
+        m = self.notice if reply else self.msg
+        await m(target, f'\x01{" ".join(map(str, msg))}\x01', tags=tags)
+
+    async def me(self, target, msg, tags=None):
+        """Send a CTCP ACTION (/me) to a target."""
+        await self.ctcp(target, 'ACTION', msg, tags=tags)
+
+    # 4. Message Parsing & Handling
+    def message_parser(self, msg):
+        """Parse a raw IRC message string into an IRCMessage object."""
+        match = self._msg_re.match(msg)
+        if not match:
+            return
+
+        # Process IRCv3 tags
+        raw_tags = match.group(1)
+        tags = {} if raw_tags is None else _tag_list_to_dict(raw_tags.split(';'))
+
+        # Process arguments
+        hostmask = Hostmask(*match.groups('')[1:4])
+        cmd = match.group(5)
+
+        # Get the command and arguments
+        raw_args = match.group(6)
+        args = [] if raw_args is None else raw_args.split(' ')
+
+        trailing = match.group(7)
+        if trailing:
+            args.append(trailing)
+
+        # Return the parsed data
+        return IRCMessage(cmd, hostmask, tags, args)
+
+    def _get_combined_handlers(self):
+        """Get combined global and instance-specific handlers."""
+
+        # do this loop only once per instance, there shouldn't be any new handlers post init
+        if self._combined_handlers is None:
+            self._combined_handlers = {}
+            global_handlers = handle.getHandlers()
+            instance_handlers = self.handle.getHandlers()
+
+            for key in set(global_handlers) | set(instance_handlers):
+                self._combined_handlers[key] = global_handlers.get(key, []) + instance_handlers.get(key, [])
+
+        return self._combined_handlers
 
     async def _process_line(self, line_str):
         """Process a single IRC message line."""
@@ -642,19 +621,42 @@ class IRC:
         await self._establish_connection(ctx)
         await self._message_loop()
 
-    async def wait_until_disconnected(self):
-        """Wait until the IRC connection is closed.
+    async def _read_line_with_timeout(self):
+        """Read a line from the IRC server with ping timeout handling."""
+        timeout = self.ping_timeout if self._pinged else self.ping_interval
+        try:
+            return await asyncio.wait_for(self._reader.readuntil(b'\n'), timeout=timeout)
+        except asyncio.TimeoutError:
+            if self._pinged:
+                raise
+            self._pinged = True
+            await self.send('PING :miniirc-ping', force=True)
+            return None
 
-        This can be used with asyncio.gather() to wait for multiple connections:
-        await asyncio.gather(irc1.wait_until_disconnected(), irc2.wait_until_disconnected())
+    # 5. IRCv3 Capability Negotiation
+    async def finish_negotiation(self, cap):
+        """Finish IRCv3 capability negotiation for a given capability."""
+        self.log.debug(f'Capability {cap} handled')
+        if self._unhandled_caps:
+            cap = cap.lower()
+            if cap in self._unhandled_caps:
+                del self._unhandled_caps[cap]
+            if len(self._unhandled_caps) < 1:
+                self._unhandled_caps = None
+                if not self.connected:
+                    await self.send('CAP END', force=True)
 
-        raises: asyncio.CancelledError. 
-        """
-        if self._task:
-            await self._task
+    async def _handle_cap(self, cap):
+        """Handle IRCv3 capability acknowledgement."""
+        cap = cap.lower()
+        self.active_caps.add(cap)
+        if self._unhandled_caps and cap in self._unhandled_caps:
+            msg = IRCMessage(f'CAP ACK {cap}', args=self._unhandled_caps[cap])
+            handled = msg.handle(self)
+            if not handled:
+                await self.finish_negotiation(cap)
 
-
-    ##### Methods that can be overriden by subclasses #####
+    # 6. Utility & Overridable Methods
     def on_disconnect(self):
         """Called when the IRC connection is closed. Override as needed."""
         pass
@@ -670,6 +672,7 @@ class IRC:
         """Alter the current nickname by appending an underscore."""
         self.current_nick += '_'
         return self.current_nick
+
 
 # Create global handler instance
 handle = HandlersCollection()
