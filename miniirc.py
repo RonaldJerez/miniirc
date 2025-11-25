@@ -270,6 +270,14 @@ class IRC:
         r'$'
     )
 
+    # Class-level handlers (global)
+    handle = HandlersCollection()
+
+    def __init_subclass__(cls, **kwargs):
+        """Create isolated handler collection for each subclass."""
+        super().__init_subclass__(**kwargs)
+        cls.handle = HandlersCollection()
+
     # 1. Initialization & Configuration
     def __init__(self, host, port, nick, *, 
                  channels=None,
@@ -312,7 +320,7 @@ class IRC:
         if self.password:
             self.ircv3_caps.add('sasl')
 
-        # Add instance handlers
+        # Instance-level handlers (shadows class attribute for this instance)
         self.handle = HandlersCollection()
 
         # Try to detect ssl
@@ -578,16 +586,30 @@ class IRC:
         return IRCMessage(cmd, hostmask, tags, args)
 
     def _get_combined_handlers(self):
-        """Get combined global and instance-specific handlers."""
+        """Get combined IRC base class (global), current class, and instance handlers."""
 
         # do this loop only once per instance, there shouldn't be any new handlers post init
         if self._combined_handlers is None:
             self._combined_handlers = {}
-            global_handlers = handle.getHandlers()
+            
+            # Get handlers from IRC base class
+            irc_base_handlers = IRC.handle.getHandlers()
+            
+            # Get handlers from the current class (if it's a subclass)
+            current_class_handlers = {}
+            if self.__class__ is not IRC:
+                current_class_handlers = self.__class__.handle.getHandlers()
+            
+            # Get instance handlers
             instance_handlers = self.handle.getHandlers()
 
-            for key in set(global_handlers) | set(instance_handlers):
-                self._combined_handlers[key] = global_handlers.get(key, []) + instance_handlers.get(key, [])
+            # Combine all three levels
+            for key in set(irc_base_handlers) | set(current_class_handlers) | set(instance_handlers):
+                self._combined_handlers[key] = (
+                    irc_base_handlers.get(key, []) + 
+                    current_class_handlers.get(key, []) + 
+                    instance_handlers.get(key, [])
+                )
 
         return self._combined_handlers
 
@@ -697,12 +719,8 @@ class IRC:
         return self.current_nick
 
 
-# Create global handler instance
-handle = HandlersCollection()
-
-
 # Handle some IRC messages by default.
-@handle('RPL_WELCOME')
+@IRC.handle('RPL_WELCOME')
 async def _handler(irc):
     irc.connected = True
     irc.isupport.clear()
@@ -726,18 +744,18 @@ async def _handler(irc):
             irc.send(*args, tags=tags)
 
 
-@handle('PING')
+@IRC.handle('PING')
 async def _handler(irc, msg):
     irc.command('PONG', *msg.args, force=True)
 
 
-@handle('PONG')
+@IRC.handle('PONG')
 async def _handler(irc, msg):
     if msg.args and msg.args[-1] == 'miniirc-ping' and irc.ping_interval:
         irc._pinged = False
 
 
-@handle('ERR_ERRONEUSNICKNAME', 'ERR_NICKNAMEINUSE')
+@IRC.handle('ERR_ERRONEUSNICKNAME', 'ERR_NICKNAMEINUSE')
 async def _handler(irc, msg):
     if not irc.connected:
         irc.log.info(f'{msg.command}: The requested nickname "{irc.current_nick}" is invalid or in use.')
@@ -756,20 +774,20 @@ async def _handler(irc, msg):
 
 
 # Server changed our nickname?
-@handle('NICK')
+@IRC.handle('NICK')
 async def _handler(irc, msg):
     if msg.hostmask.nick.lower() == irc.current_nick.lower():
         irc.current_nick = msg.args[-1]
 
 
-@handle('CTCP VERSION')
+@IRC.handle('CTCP VERSION')
 async def _handler(irc, msg):
     if not version:
         return
     irc.ctcp(msg.hostmask.nick, 'VERSION', version, reply=True)
 
 
-@handle('CAP')
+@IRC.handle('CAP')
 async def _handler(irc, msg):
     if len(msg.args) < 3:
         return
@@ -778,20 +796,20 @@ async def _handler(irc, msg):
     msg.handle(irc)
 
 
-@handle('CAP ACK')
+@IRC.handle('CAP ACK')
 async def _handler(irc, msg):
     caps = msg.args[-1].split(' ')
     for cap in caps:
         irc._handle_cap(cap)
 
 
-@handle('CAP NAK')
+@IRC.handle('CAP NAK')
 async def _handler(irc):
     irc._unhandled_caps = None
     irc.send('CAP END', force=True)
 
 
-@handle('CAP LS', 'CAP NEW')
+@IRC.handle('CAP LS', 'CAP NEW')
 async def _handler(irc, msg):
     req = set()
 
@@ -820,7 +838,7 @@ async def _handler(irc, msg):
         irc.send('CAP END', force=True)
 
 
-@handle('CAP DEL')
+@IRC.handle('CAP DEL')
 async def _handler(irc, msg):
     caps = msg.args[-1].split(' ')
 
@@ -830,7 +848,7 @@ async def _handler(irc, msg):
             irc.active_caps.remove(cap)
 
 
-@handle('CAP ACK SASL')
+@IRC.handle('CAP ACK SASL')
 async def _handler(irc, msg):
     sasl_options = msg.args[-1].upper().split(',')
     if irc.password and (len(msg.args) < 2 or 'PLAIN' in sasl_options):
@@ -840,7 +858,7 @@ async def _handler(irc, msg):
         irc.finish_negotiation('sasl')
 
 
-@handle('AUTHENTICATE')
+@IRC.handle('AUTHENTICATE')
 async def _handler(irc, msg):
     if msg.args and msg.args[0] == '+':
         irc._sasl = True
@@ -848,7 +866,7 @@ async def _handler(irc, msg):
         irc.send('AUTHENTICATE', b64encode(pw).decode('utf-8'), force=True)
 
 
-@handle('ERR_SASLFAIL', 'ERR_SASLABORTED')
+@IRC.handle('ERR_SASLFAIL', 'ERR_SASLABORTED')
 async def _handler(irc):
     if irc._sasl:
         irc._sasl = False
@@ -856,12 +874,12 @@ async def _handler(irc):
         irc.send('AUTHENTICATE *', force=True)
 
 
-@handle('ERR_NICKLOCKED', 'RPL_SASLSUCCESS', 'ERR_SASLFAIL', 'ERR_SASLABORTED')
+@IRC.handle('ERR_NICKLOCKED', 'RPL_SASLSUCCESS', 'ERR_SASLFAIL', 'ERR_SASLABORTED')
 async def _handler(irc):
     irc.finish_negotiation('sasl')
 
 
-@handle('CAP ACK STS')
+@IRC.handle('CAP ACK STS')
 async def _handler(irc, msg):
     if not irc.ssl and len(msg.args) == 2:
         try:
@@ -883,7 +901,7 @@ async def _handler(irc, msg):
         irc.finish_negotiation('sts')
 
 
-@handle('RPL_ISUPPORT')
+@IRC.handle('RPL_ISUPPORT')
 async def _handler(irc, msg):
     isupport = _tag_list_to_dict(msg.args[1:-1])
 

@@ -1,77 +1,89 @@
-import miniirc
 import pytest
 import asyncio
-from miniirc import IRCMessage, Hostmask
+from miniirc import IRC, IRCMessage, Hostmask, Handler
 
 
-class DummyIRC(miniirc.IRC):
+class DummyIRC(IRC):
     def __init__(self):
         super().__init__('localhost', 6697, 'tester')
         loop = asyncio.get_event_loop()
         self._loop = loop
 
 
-def verify_handler(event):
-    handlers = miniirc.handle.getHandlers()
-    handler = handlers[event][-1]
-    assert handler.awaitable
+def verify_is_handler(container, event):
+    handlers = container.handle.getHandlers()
+
+    for ev, handler_list in handlers.items():
+        assert ev == ev.upper()
+        for handler in handler_list:
+            assert isinstance(handler, Handler)
 
 
 def test_adding_handlers():
-    try:
-        tmp, miniirc.handle.handlers = miniirc.handle.handlers, {}
+    # global IRC handlers
+    @IRC.handle('global_event1', 'global_event2')
+    async def f(irc, msg): ...
+    verify_is_handler(IRC, 'global_event1')
+    verify_is_handler(IRC, 'global_event2')
 
-        @miniirc.handle('test', '1')
-        async def f(irc, msg): ...
+    # subclass handlers
+    @DummyIRC.handle('subclass_event1', 'subclass_event2')
+    async def e(irc, msg): ... 
+    verify_is_handler(DummyIRC, 'subclass_event1')
+    verify_is_handler(DummyIRC, 'subclass_event2')
 
-        verify_handler('TEST')
-        verify_handler('1')
+    # instance handlers
+    bot_instance = DummyIRC()
+    
+    @bot_instance.handle('instance_event1', 'instance_event2')
+    async def h(irc, msg): ...
+    verify_is_handler(bot_instance, 'instance_event1')
+    verify_is_handler(bot_instance, 'instance_event2')
 
-        expected = {
-            'TEST': [f],
-            '1': [f],
-        }
+    # get just the keys for assertion
+    global_handlers = set(sorted(IRC.handle.getHandlers().keys()))
+    subclass_handlers = set(sorted(DummyIRC.handle.getHandlers().keys()))
+    instance_handlers = set(sorted(bot_instance.handle.getHandlers().keys()))
 
-        assert miniirc.handle.handlers.keys() == expected.keys()
+    assert not subclass_handlers.issubset(global_handlers)
+    assert not instance_handlers.issubset(subclass_handlers)
+    assert not instance_handlers.issubset(global_handlers)
 
-    finally:
-        miniirc.handle.handlers = tmp
+    assert bot_instance._get_combined_handlers().keys() == global_handlers | subclass_handlers | instance_handlers
 
 
 def test_handler_signatures():
     try:
-        tmp, miniirc.handle.handlers = miniirc.handle.handlers, {}
-
+        tmp, IRC.handle.handlers = IRC.handle.handlers, {}
         # Test simple handler with no args
-        @miniirc.handle('TEST1')
+        @IRC.handle('TEST1')
         async def handler1(): ...
 
-        handler = miniirc.handle.handlers['TEST1'][-1]
+        handler = IRC.handle.handlers['TEST1'][-1]
         assert handler.params_count == 0
 
         # Test handler with single parameter
-        @miniirc.handle('TEST2')
+        @IRC.handle('TEST2')
         async def handler2(irc): ...
 
-        handler = miniirc.handle.handlers['TEST2'][-1]
+        handler = IRC.handle.handlers['TEST2'][-1]
         assert handler.params_count == 1
 
         # Test handler with all parameters
-        @miniirc.handle('TEST3')
+        @IRC.handle('TEST3')
         async def handler4(irc, msg): ...
 
-        handler = miniirc.handle.handlers['TEST3'][-1]
+        handler = IRC.handle.handlers['TEST3'][-1]
         assert handler.params_count == 2
 
         # should raise if too many params
         with pytest.raises(TypeError):
 
-            @miniirc.handle('TEST6')
+            @IRC.handle('TEST6')
             async def handler_wrong3(irc, msg, tt): ...
 
     finally:
-        miniirc.handle.handlers = tmp
-
+        IRC.handle.handlers = tmp
 
 @pytest.mark.asyncio
 async def test_handler_execution():
@@ -159,3 +171,35 @@ async def test_concurrency():
     await asyncio.sleep(0.004)
 
     assert completion_order == ['1st', '2nd', '3rd']
+
+
+@pytest.mark.asyncio
+async def test_handler_inheritance():
+    """Test that instance handlers execute along with class handlers."""
+    irc = DummyIRC()
+    results = []
+
+    # Add a global-level handler to IRC
+    @IRC.handle('MULTI')
+    async def class_handler(irc, msg):
+        results.append('global')
+
+    # Add a class-level handler to IRC
+    @DummyIRC.handle('MULTI')
+    async def class_handler(irc, msg):
+        results.append('class')
+
+    # Add an instance-level handler
+    @irc.handle('MULTI')
+    async def instance_handler(irc, msg):
+        results.append('instance')
+
+    msg = IRCMessage('MULTI', Hostmask(), {}, [])
+    msg.handle(irc)
+
+    await asyncio.sleep(0.01)
+
+    # Both handlers should have been called
+    assert 'global' in results
+    assert 'class' in results
+    assert 'instance' in results
