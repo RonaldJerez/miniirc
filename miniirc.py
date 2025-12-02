@@ -185,6 +185,9 @@ class IRCMessage(NamedTuple):
     tags: dict | None = None
     args: list | None = None
 
+    # optionally store the line this message was derived from (for debugging purpose)
+    line: str | None = None 
+
     def sub_command(self, prefix):
         """
         Creates a new message with sub-commands from the current message.
@@ -245,7 +248,7 @@ class IRCMessage(NamedTuple):
                 # Run non-async handlers in the event loop's default executor
                 await irc._loop.run_in_executor(None, handler.func, *params[: handler.params_count])
         except Exception as e:
-            self.log.exception(f'Handler {handler.func.__name__} raised an exception: {e}')
+            irc.log.exception(f'Handler {handler.func.__name__} raised an exception: {e}')
 
 
 class IRC:
@@ -311,6 +314,7 @@ class IRC:
         self.max_reconnect_attempts = max_reconnect_attempts
         self._sendq = []
         self.log = logger
+        self._disconnecting = False
 
         # validate the nickname
         if not self._nickname_re.match(self.nick):
@@ -390,6 +394,7 @@ class IRC:
         self.connected = None
         self.active_caps.clear()
         self._unhandled_caps = None
+        self._disconnecting = True
 
         if hasattr(self, '_writer') and not self._writer.is_closing():
             # with suppress(Exception):
@@ -397,8 +402,8 @@ class IRC:
             if quit_task:
                 await quit_task
 
-            self._writer.close()
-            with suppress(ConnectionResetError):
+            with suppress(Exception):
+                self._writer.close()
                 await self._writer.wait_closed()
 
         # Cancel any running task
@@ -489,6 +494,10 @@ class IRC:
             force: Send even if not connected (for connection setup)
             tags: IRCv3 message tags dictionary
         """
+        if getattr(self, '_disconnecting', False):
+            self.log.debug('Suppressing send: disconnect in progress')
+            return
+
         str_msg = ' '.join(str(m) for m in msg)
 
         if not self.connected and not force:
@@ -560,9 +569,9 @@ class IRC:
         return self.ctcp(target, 'ACTION', msg, tags=tags)
 
     # 4. Message Parsing & Handling
-    def message_parser(self, msg):
+    def message_parser(self, line):
         """Parse a raw IRC message string into an IRCMessage object."""
-        match = self._msg_re.match(msg)
+        match = self._msg_re.match(line)
         if not match:
             return
 
@@ -583,7 +592,7 @@ class IRC:
             args.append(trailing)
 
         # Return the parsed data
-        return IRCMessage(cmd, hostmask, tags, args)
+        return IRCMessage(cmd, hostmask, tags, args, line)
 
     def _get_combined_handlers(self):
         """Get combined IRC base class (global), current class, and instance handlers."""
@@ -792,7 +801,7 @@ async def _handler(irc, msg):
     if len(msg.args) < 3:
         return
 
-    msg = IRCMessage(f'CAP {msg.args[1]}', msg.hostmask, args=msg.args)
+    msg = msg._replace(command=f'CAP {msg.args[1]}')
     msg.handle(irc)
 
 

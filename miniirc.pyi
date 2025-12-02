@@ -79,6 +79,7 @@ class IRCMessage(NamedTuple):
     hostmask: Hostmask = Hostmask()
     tags: TagsDict | None = None
     args: list | None = None
+    line: str | None = None
 
     def sub_command(self, prefix: str) -> 'IRCMessage | None': ...
     def handle(self, irc: 'IRC') -> bool: ...
@@ -132,6 +133,7 @@ class IRC:
     _pinged: bool
     _reader: StreamReader | None
     _writer: StreamWriter | None
+    _disconnecting: bool
 
     handle: HandlersCollection
 
