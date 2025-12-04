@@ -228,7 +228,7 @@ class IRCMessage(NamedTuple):
         msg_command = msg.command.upper()
         combined_handlers = irc._get_combined_handlers()
 
-        handlers = combined_handlers.get(msg_command, []) + combined_handlers.get(None, [])
+        handlers = combined_handlers.get(msg_command, []) + combined_handlers.get('*', [])
         if len(handlers) > 0:
             handled = True
             for handler in handlers:

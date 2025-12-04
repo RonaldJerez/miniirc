@@ -114,6 +114,32 @@ async def test_handler_execution():
         ('handler3', 'TEST', Hostmask('nick', 'user', 'host'), {'tag': 'value'}, ['arg1', 'arg2']),
     ]
 
+@pytest.mark.asyncio
+async def test_wildcard_handlers():
+    irc = DummyIRC()
+    called = {'ANY': 0, 'SPECIFIC': 0}
+
+    @irc.handle('*')
+    async def handle_any(irc, msg):
+        called['ANY'] += 1
+
+    @irc.handle('SPECIFIC')
+    async def handle_specific(irc, msg):
+        called['SPECIFIC'] += 1
+
+    msg1 = IRCMessage('SPECIFIC')
+    msg2 = IRCMessage('OTHER')
+
+    assert called['ANY'] == 0
+    assert called['SPECIFIC'] == 0
+
+    msg1.handle(irc)
+    msg2.handle(irc)
+
+    await asyncio.sleep(0.01)
+    assert called['ANY'] == 2
+    assert called['SPECIFIC'] == 1
+
 
 @pytest.mark.asyncio
 async def test_ctcp_handlers():
