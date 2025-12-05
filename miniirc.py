@@ -517,7 +517,7 @@ class IRC:
             self.log.debug('No writer available to send message')
             return
 
-        self.log.debug(f'>>> {str_msg}')
+        self.on_line_transport(str_msg, received=False, tags=tags)
 
         msg_bytes = str_msg.replace('\x00', '\ufffd').encode('utf-8', errors='replace')
         msg_bytes = msg_bytes.replace(b'\r', b' ').replace(b'\n', b' ')
@@ -630,16 +630,16 @@ class IRC:
 
     async def _process_line(self, line_str):
         """Process a single IRC message line."""
-        self.debug_print_line(line_str)
 
         try:
             msg = self.message_parser(line_str)
             if isinstance(msg, IRCMessage):
+                self.on_line_transport(line_str, received=True, tags=msg.tags)
                 msg.handle(self)
             else:
-                self.log.debug(f'Ignored message: {line_str}')
+                raise Exception('Malformed message')
         except Exception as exc:
-            self.log.error('Error handling IRC message', exc_info=exc)
+            self.log.error(f'Error handling IRC message: {line_str}', exc_info=exc)
 
     async def _message_loop(self):
         """Main message reading and processing loop."""
@@ -720,13 +720,16 @@ class IRC:
     def on_disconnect(self):
         """Called when the IRC connection is closed. Override as needed."""
         pass
-
-    def debug_print_line(self, line):
+    
+    def on_line_transport(self, line, *, received = True, tags = None):
         """
-        Print every line received when debugging.
+        Called when a line is sent or received. Currently just logs the line.
         Override this method to customize or filter which lines to print.
         """
-        self.log.debug(f'<<< {line}')
+        if received:
+            self.log.debug(f'<<< {line}')
+        else:
+            self.log.debug(f'>>> {line}')
 
     def alter_nickname(self):
         """Alter the current nickname by appending an underscore."""
