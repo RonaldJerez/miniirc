@@ -13,21 +13,20 @@ class DummyIRC(miniirc.IRC):
 
 def test_message_parser():
     irc = DummyIRC()
-    p = irc.message_parser
+
+    # test various hostmask combinations
     for i in range(4):
         hostmask = Hostmask(*('n', 'u', 'h')[:i])
-        hostmask_s = ':n!u@h'[: i * 2] + (' ' if i else '')
-        assert p(hostmask_s + 'PRIVMSG #channel :Hello world!') == IRCMessage(
-            'PRIVMSG', hostmask, {}, ['#channel', 'Hello world!']
-        )
+        hostmask_str = ':n!u@h'[: i * 2] + (' ' if i else '')
+        line = hostmask_str + 'PRIVMSG #channel :Hello world!'
 
+        assert irc.message_parser(line) == IRCMessage('PRIVMSG', hostmask, {}, ['#channel', 'Hello world!'], line)
+
+    # test tags parsing
     hostmask = Hostmask()
-    assert p(r'@tag1=value\:\swith\s\\spaces\rand\nnewlines;tag2;tag3= Hi') == (
-        'Hi',
-        hostmask,
-        {'tag1': 'value; with \\spaces\rand\nnewlines', 'tag2': True, 'tag3': ''},
-        [],
-    )
+    line = r'@tag1=value\:\swith\s\\spaces\rand\nnewlines;tag2;tag3= Hi'
+    outcome = IRCMessage('Hi', hostmask, {'tag1': 'value; with \\spaces\rand\nnewlines', 'tag2': True, 'tag3': ''}, [], line)
+    assert irc.message_parser(line) == outcome
 
 
 def test_version():
