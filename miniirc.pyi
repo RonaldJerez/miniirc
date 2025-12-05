@@ -95,7 +95,10 @@ def _event_name_to_numeric(event: str) -> str | None: ...
 
 # Create the IRC class
 class IRC:
-    connected: bool | None = None
+    DISCONNECTED: int = 0
+    CONNECTED: int = 1
+    WELCOMED: int = 2
+
     msglen: int = 512
 
     host: str
@@ -121,8 +124,8 @@ class IRC:
     log: Logger
 
     # Internal runtime attrs
-    _sendq: list[tuple[TagsDict | None, tuple[str, ...]]] | None
-    _loop: AbstractEventLoop
+    _sendq: list[tuple[TagsDict | None, tuple[str, ...]]]
+    _loop: AbstractEventLoop | None
     _task: Task[None] | None
     _sasl: bool
     _unhandled_caps: dict[str, list[str]] | None
@@ -133,9 +136,11 @@ class IRC:
     _pinged: bool
     _reader: StreamReader | None
     _writer: StreamWriter | None
-    _disconnecting: bool
+    _connection: int
 
     handle: HandlersCollection
+
+    def __init_subclass__(cls, **kwargs) -> None: ...
 
     # 1. Initialization & Configuration
     def __init__(
@@ -158,6 +163,13 @@ class IRC:
         ping_timeout: int | None = None,
         max_reconnect_attempts: int = 10,
     ) -> None: ...
+
+    @property
+    def welcomed(self) -> bool: ...
+
+    @property
+    def connected(self) -> bool: ...
+
     def set_logger(
         self, name: str, *, level: int | None = None, filename: str | None = None, format: str | None = None
     ) -> None: ...
@@ -177,6 +189,7 @@ class IRC:
     def notice(self, target: str, msg: str, tags: TagsDict | None = None) -> Task | None: ...
     def ctcp(self, target: str, *msg: str, reply: bool = False, tags: TagsDict | None = None) -> Task | None: ...
     def me(self, target: str, msg: str, tags: TagsDict | None = None) -> Task | None: ...
+    async def _quote(self, msg_bytes: bytes) -> None: ...
 
     # 4. Message Parsing & Handling
     def message_parser(self, msg: str) -> IRCMessage | None: ...
@@ -194,3 +207,4 @@ class IRC:
     def on_disconnect(self) -> None: ...
     def debug_print_line(self, line: str) -> None: ...
     def alter_nickname(self) -> str: ...
+

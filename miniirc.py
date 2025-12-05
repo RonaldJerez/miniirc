@@ -254,7 +254,11 @@ class IRCMessage(NamedTuple):
 class IRC:
     """An IRC client connection supporting IRCv2 and IRCv3 features."""
 
-    connected = None
+    DISCONNECTED = 0 # previously None
+    CONNECTED = 1 # previously False
+    WELCOMED = 2 # previously True
+
+    _connection = DISCONNECTED
     msglen = 512
     quit_message = 'I grew sick and died.'
     _reconnect = False
@@ -314,7 +318,6 @@ class IRC:
         self.max_reconnect_attempts = max_reconnect_attempts
         self._sendq = []
         self.log = logger
-        self._disconnecting = False
 
         # validate the nickname
         if not self._nickname_re.match(self.nick):
@@ -330,6 +333,14 @@ class IRC:
         # Try to detect ssl
         if ssl is None and self.port == 6697:
             self.ssl = True
+
+    @property
+    def connected(self):
+        return self._connection != self.DISCONNECTED
+    
+    @property
+    def welcomed(self):
+        return self._connection == self.WELCOMED
 
     def set_logger(self, name, *, level=None, filename=None, format=None):
         """Set up a logger for this IRC instance."""
@@ -360,7 +371,7 @@ class IRC:
         Does **NOT** raises CancelledError on disconnect, if you need that for say asyncio.gather()
         use wait_until_disconnected(), after making your connection.
         """
-        if self.connected is not None:
+        if self.connected:
             self.log.debug('Already connected!')
             return
 
@@ -373,7 +384,7 @@ class IRC:
                 asyncio.set_event_loop(loop)
 
         self._loop = loop
-        self.connected = False
+        self._connection = self.CONNECTED
         self._unhandled_caps = None
         self.current_nick = self.nick
         self.log.debug('Starting main loop...')
@@ -391,13 +402,11 @@ class IRC:
             return
         if auto_reconnect is not None:
             self._reconnect = auto_reconnect
-        self.connected = None
+        self._connection = self.DISCONNECTED
         self.active_caps.clear()
         self._unhandled_caps = None
-        self._disconnecting = True
 
         if hasattr(self, '_writer') and not self._writer.is_closing():
-            # with suppress(Exception):
             quit_task = self.command('QUIT', msg or self.quit_message, force=True)
             if quit_task:
                 await quit_task
@@ -494,20 +503,17 @@ class IRC:
             force: Send even if not connected (for connection setup)
             tags: IRCv3 message tags dictionary
         """
-        if getattr(self, '_disconnecting', False):
-            self.log.debug('Suppressing send: disconnect in progress')
-            return
 
         str_msg = ' '.join(str(m) for m in msg)
 
-        if not self.connected and not force:
+        if not self.welcomed and not force:
             self.log.debug(f'>Q> {str_msg}')
             if not self._sendq:
                 self._sendq = []
             self._sendq.append((tags, msg))
             return
 
-        if not hasattr(self, '_writer'):
+        if not hasattr(self, '_writer') or self._writer.is_closing():
             self.log.debug('No writer available to send message')
             return
 
@@ -657,8 +663,8 @@ class IRC:
                 self.log.info(f'Disconnected from {self.host}')
                 self.log.debug(f'Disconnection reason: {exc}')
 
-                # Only reconnect we had a successful initial connection (RPL_WELCOME received)
-                should_reconnect = self._reconnect or (self.persist and self.connected)
+                # Only reconnect we had a successful initial connection
+                should_reconnect = self._reconnect or (self.persist and self.welcomed)
                 await self.disconnect()
                 self.on_disconnect()
 
@@ -697,7 +703,7 @@ class IRC:
                 del self._unhandled_caps[cap]
             if len(self._unhandled_caps) < 1:
                 self._unhandled_caps = None
-                if not self.connected:
+                if not self.welcomed:
                     self.send('CAP END', force=True)
 
     def _handle_cap(self, cap):
@@ -731,7 +737,7 @@ class IRC:
 # Handle some IRC messages by default.
 @IRC.handle('RPL_WELCOME')
 async def _handler(irc):
-    irc.connected = True
+    irc._connection = irc.WELCOMED
     irc.isupport.clear()
     irc._unhandled_caps = None
 
@@ -766,7 +772,7 @@ async def _handler(irc, msg):
 
 @IRC.handle('ERR_ERRONEUSNICKNAME', 'ERR_NICKNAMEINUSE')
 async def _handler(irc, msg):
-    if not irc.connected:
+    if not irc.welcomed:
         irc.log.info(f'{msg.command}: The requested nickname "{irc.current_nick}" is invalid or in use.')
 
         new_nick = irc.alter_nickname()
@@ -838,7 +844,7 @@ async def _handler(irc, msg):
             else:
                 req.add(cap)
 
-    if irc.connected is None:
+    if not irc.connected:
         return
     elif req:
         irc.command('CAP', 'REQ', ' '.join(req), force=True)
